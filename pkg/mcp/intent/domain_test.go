@@ -22,7 +22,6 @@ func TestDomainOfPath(t *testing.T) {
 		// plugin 必须看二级模块，不能按一级 plugin 兜底
 		{"/system/api/plugin/push/baidu", DomainSeo},
 		{"/system/api/plugin/backup/restore", DomainSiteOps},
-		{"/system/api/plugin/user/list", DomainCommerce},
 		{"/system/api/plugin/material/list", DomainContentOps},
 		{"/system/api/plugin/wechat/menu", DomainChannel},
 		{"/system/api/plugin/guestbook/list", DomainInteraction},

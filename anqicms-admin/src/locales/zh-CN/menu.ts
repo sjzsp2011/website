@@ -168,7 +168,6 @@ export default {
   'menu.sale.freeshipping': '免运费',
   'menu.sale.buygifts': '买 X 送 Y',
   'menu.promotion.subscription': '订阅',
-  'menu.promotion.googlemerchant': 'Google Merchant',
   'menu.promotion.automation': '自动营销',
   'menu.customer.customer': '顾客',
   'menu.customer.group': '顾客分组',

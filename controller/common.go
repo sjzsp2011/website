@@ -300,23 +300,6 @@ func Common(ctx iris.Context) {
 	ctx.Values().Set("page", currentPage)
 	ctx.ViewData("currentPage", currentPage)
 
-	// invite code
-	inviteCode := ctx.URLParam("invite")
-	if inviteCode != "" {
-		_, err := currentSite.CheckUserInviteCode(inviteCode)
-		if err != nil {
-			inviteCode = ""
-		}
-	}
-	if inviteCode != "" {
-		// 生成一个cookie
-		ctx.SetCookieKV("invite", inviteCode, iris.CookiePath("/"), iris.CookieExpires(24*30*time.Hour))
-	} else {
-		// 尝试读取cookie中的数据
-		inviteCode = ctx.GetCookie("invite")
-	}
-	ctx.ViewData("inviteCode", inviteCode)
-
 	ctx.Next()
 }
 
@@ -593,9 +576,6 @@ func ReRouteContext(ctx iris.Context) {
 	case "index":
 		IndexPage(ctx)
 		return
-	case provider.PatternPeople:
-		UserPage(ctx)
-		return
 	case provider.PatternPlaceIndex:
 		PlaceIndex(ctx)
 		return
@@ -664,8 +644,6 @@ func ParseRoute(ctx iris.Context) (map[string]string, bool) {
 	ruleNames := []string{
 		provider.PatternSearch,       // 搜索
 		provider.PatternArchiveIndex, // 模型页面
-		provider.PatternPeopleIndex,  // 用户列表
-		provider.PatternPeople,       // 用户
 		provider.PatternTagIndex,     // 标签列表
 		provider.PatternTag,          // 标签详情
 		provider.PatternPage,         // 单页

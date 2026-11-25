@@ -442,64 +442,6 @@ func TestInvokeRoutesNonListUnaffected(t *testing.T) {
 	}
 }
 
-// TestInvokeRoutesPartialForUser commerce 的 user_update 走 invokeRoutes
-// （不是 switchCompose），且打到 PluginUserDetailForm —— pluginUser.go:242
-// 原本无条件 req.UpdateAll = true，SaveUserInfo 里 15 处都是
-// `if req.UpdateAll || req.X != ""`，所以不传就清零。
-//
-// 实测（2026-10-03）会员 id=1564「akun666」只改 user_name 后：
-// email/phone/invite_code 被清空、status 从 1 变 0（**账号被禁用**），
-// 而端点回 ok=true。危害比分类那次更大。
-//
-// 修法演变（三步）：
-//  1. desc 里警告「这是全量覆盖，自己先 get 再整体写回」——把风险推给调用方，
-//     实测 AI 不会可靠照做；
-//  2. invokeRouteOverwriteFields 登记该端点做补齐兜底；
-//  3. 认清 UpdateAll 是有开关的 → 改用 partial。
-//
-// 本测试只锁**意图层该做的判断**：走 partial 的端点**不补齐**。
-// partial 的实际注入在 provider 的 injectPartialUpdate（那里是所有通道的
-// 必经之处，含通用 api 意图），由 TestInjectPartialUpdateInProvider 覆盖。
-func TestInvokeRoutesPartialForUser(t *testing.T) {
-	spec := mustSpec(t, "commerce")
-	var sent map[string]any
-	getCalls := 0
-	inv := func(_ context.Context, _ string, m map[string]any) (string, error) {
-		p, _ := m["params"].(map[string]any)
-		if p == nil {
-			p = m
-		}
-		if fmt.Sprint(m["method"]) == "GET" {
-			getCalls++
-			return `{"ok":true,"code":0,"data":{"code":0,"data":{"id":1564}}}`, nil
-		}
-		sent = p
-		return `{"ok":true,"code":0,"data":{"code":0,"data":{"id":1564}}}`, nil
-	}
-	if _, err := spec.Compose(context.Background(), map[string]any{
-		"action": "user_update", "id": 1564, "user_name": "新名字",
-	}, inv); err != nil {
-		t.Fatalf("不应报错：%v", err)
-	}
-	if sent == nil {
-		t.Fatal("未捕获到写请求")
-	}
-	// 关键断言：走 partial 的端点**不该回查旧值补齐**。
-	// 补齐多余（端点自己能只覆盖传入字段）且有风险（读端点可能返回派生值）。
-	if getCalls != 0 {
-		t.Errorf("走 partial 后不该回查旧值补齐，实际查了 %d 次", getCalls)
-	}
-	// PATCH 的要点：未传字段不该出现在请求里，端点会保持原值。
-	for _, f := range []string{"email", "phone", "invite_code", "group_id", "status"} {
-		if _, ok := sent[f]; ok {
-			t.Errorf("未传的 %s 不该出现在请求里（PATCH 语义下端点保持原值）", f)
-		}
-	}
-	if sent["user_name"] != "新名字" {
-		t.Errorf("显式传的字段应原样送达，实际=%#v", sent["user_name"])
-	}
-}
-
 // TestInvokeRouteOverwriteTableConsistency 覆盖表里的端点必须真有 GET 兄弟，
 // 否则 preserveOnInvokeRoute 找不到旧值、登记等于空转。
 func TestInvokeRouteOverwriteTableConsistency(t *testing.T) {
@@ -632,10 +574,6 @@ func TestInvokeRoutesMaterialSaveSkipsFill(t *testing.T) {
 func TestOverwriteTableOnlyDataEndpoints(t *testing.T) {
 	// 已知会丢数据字段的端点，按机制分两组
 	byPartial := []string{
-		"/system/api/plugin/user/detail",              // provider/user.go 15 处 req.UpdateAll
-		"/system/api/plugin/user/group/detail",        // provider/user.go SaveUserGroupInfo 指针 + UpdateAll
-		"/system/api/plugin/coupon/detail",            // provider/coupon.go SaveCoupon 用 library.Assign + UpdateAll
-		"/system/api/plugin/activity/detail",          // provider/activity.go SaveActivity 同上（skus 三态）
 		"/system/api/plugin/material/detail",          // provider/material.go SaveMaterial 同上
 		"/system/api/plugin/material/category/detail", // provider/material.go SaveMaterialCategory 同上
 		"/system/api/plugin/place/detail",             // provider/place.go SavePlace 同上

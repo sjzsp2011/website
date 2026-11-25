@@ -43,7 +43,7 @@ var apiIntentCatalog = []*IntentSpec{
 				"取值与端点数：siteops 站点运维(69)、system 系统设置(57)、contentops 内容生产(47)、commerce 交易与会员(44)、" +
 				"content 内容管理(40)、seo 推广与SEO(36)、channel 触达渠道(30)、design 模板设计(22)、account 管理员(17)、" +
 				"interaction 用户互动(12)、structure 站点结构(10)、traffic 数据统计(9)、media 素材管理(8)",
-				Enum: []string{"siteops", "system", "contentops", "commerce", "content", "seo", "channel", "design", "account", "interaction", "structure", "traffic", "media"}},
+				Enum: []string{"siteops", "system", "contentops", "content", "seo", "channel", "design", "account", "interaction", "structure", "traffic", "media"}},
 			"risk":    {Type: "string", Desc: "风险等级过滤（list）", Enum: []string{"read", "write", "destructive"}},
 			"method":  {Type: "string", Desc: "HTTP 方法过滤（list）/ 调用方法（invoke）。" +
 				"schema 查「同一路径只有 POST」的端点时必须显式传（如 plugin/keyword/detail），否则按 GET 匹配会报「未找到端点」"},

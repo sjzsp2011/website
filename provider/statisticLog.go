@@ -507,11 +507,6 @@ func (w *Website) InitStatistic() {
 		fmt.Println("InitStatisticLog error:", err)
 		return
 	}
-	w.ShopCountLog, err = NewShopCountCache(w.RootPath + "data/statistic/")
-	if err != nil {
-		fmt.Println("InitShopCountLog error:", err)
-		return
-	}
 	// 数据的合并，会在statistic中处理
 	// 先从旧站点迁移数据
 	// 处理 statistic

@@ -67,7 +67,6 @@ const (
 	GoogleAuthSettingKey     = "google_auth"
 	CurrencySettingKey       = "currency"
 	CommunicationSettingKey  = "communication"
-	GoogleMerchantSettingKey = "google_merchant"
 	LLMsSettingKey           = "llms"
 	AiSettingKey             = "ai_setting"
 	PlaceSettingKey          = "place"
@@ -145,7 +144,7 @@ func (w *Website) LoadSystemSetting(value string) {
 		_ = json.Unmarshal([]byte(value), w.System)
 	}
 	//如果没有设置模板，则默认是default
-	if w.System.TemplateName == "" {
+	if w.System.TemplateName == "" || w.System.TemplateName == "shop" {
 		w.System.TemplateName = "default"
 	}
 	if w.System.Language == "" {
@@ -1231,21 +1230,6 @@ func (w *Website) GetGoogleAuthSetting() *config.PluginGoogleAuthConfig {
 		frontUrl = w.System.FrontUrl
 	}
 	cfg.RedirectUrl = frontUrl + "/login/google"
-
-	return &cfg
-}
-
-func (w *Website) GetGoogleMerchantSetting() *config.PluginGoogleMerchantConfig {
-	var cfg config.PluginGoogleMerchantConfig
-	value := w.GetSettingValue(GoogleMerchantSettingKey)
-	if value != "" {
-		_ = json.Unmarshal([]byte(value), &cfg)
-	}
-	baseUrl := w.System.BaseUrl
-	if w.System.AdminUrl != "" {
-		baseUrl = w.System.AdminUrl
-	}
-	cfg.RedirectUrl = baseUrl + "/system/promotion/googlemerchant/callback"
 
 	return &cfg
 }

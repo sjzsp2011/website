@@ -38,8 +38,7 @@ func TestWebsiteDetailNoPasswordField(t *testing.T) {
 	}
 	// 结构体里可以有 Password 字段（用于输出掩码），但绝不能复用
 	// config.MysqlConfig——那个带真值。断言 Mysql 用的是脱敏类型。
-	if !strings.Contains(seg, "Mysql     WebsiteMysqlSafe") &&
-		!strings.Contains(seg, "Mysql WebsiteMysqlSafe") {
+	if !strings.Contains(strings.Join(strings.Fields(seg), " "), "Mysql WebsiteMysqlSafe ") {
 		t.Errorf("Mysql 字段必须用脱敏类型 WebsiteMysqlSafe，实际：\n%s", seg)
 	}
 	if strings.Contains(seg, "config.MysqlConfig") {

@@ -110,45 +110,6 @@ func TestInteractionValuesDescListsFields(t *testing.T) {
 	}
 }
 
-// TestOrderIdIsBusinessOrderNo commerce_order 的 id 是订单业务号而非数据库自增 id。
-//
-// 为什么要锁：端点侧主键字段是 order_id（string，业务单号如 wc2021101838889109642），
-// 意图层对外统一叫 id 并做了 rename 换算，所以功能上两种传法都能打通 ——
-// 但类型必须声明为 string。若声明成 integer，AI 会照 list 返回里的数据库 id 去传，
-// 结果是「record not found」，且看不出是自己传错了字段。
-func TestOrderIdIsBusinessOrderNo(t *testing.T) {
-	spec := mustSpec(t, "commerce_order")
-	id := spec.Params["id"]
-	if id.Type != "string" {
-		t.Errorf("commerce_order.id 类型应为 string（订单业务单号），实际=%q", id.Type)
-	}
-	mustHaveAll(t, "commerce_order.id", id.Desc,
-		"订单号", "不是数据库自增 id", "order_id",
-	)
-}
-
-// TestCommerceUserUpdateIsPartialUpdate user_update 现在是**部分更新**：
-// 意图层会先回查旧值再补齐未传字段，所以 desc 不该再要求调用方手工 get 全量。
-//
-// 这条测试的来历值得留着：早先它锁的是「desc 必须警告全量覆盖」——
-// 当时的解法是**只在 desc 里警告，把风险推给调用方**。实测证明 AI 不会可靠照做：
-// 2026-10-03 会员 id=1564 只改 user_name，email/phone/invite_code 被清空、
-// status 从 1 变 0（账号被禁用）。于是改为在 invokeRoutes 层兜底
-// （preserveOnInvokeRoute），desc 随之更正。
-//
-// 锁的是「不再声称需要手工 get 全量」，避免有人日后把兜底删掉却忘了改 desc。
-func TestCommerceUserUpdateIsPartialUpdate(t *testing.T) {
-	spec := mustSpec(t, "commerce")
-	mustHaveAll(t, "commerce.Desc", spec.Desc, "user_update", "部分更新", "沿用原值")
-	mustHaveAll(t, "commerce.values", spec.Params["values"].Desc, "user_update", "部分更新")
-	// 反向断言：旧文案不该再出现，否则等于没修
-	for _, bad := range []string{"先 user_get 取全量", "一起整体写回"} {
-		if strings.Contains(spec.Desc, bad) || strings.Contains(spec.Params["values"].Desc, bad) {
-			t.Errorf("desc 仍含旧的风险转嫁文案 %q，行为已由意图层兜底，不该再要求调用方手工处理", bad)
-		}
-	}
-}
-
 // TestFsGlobDescAdvertisesSupportedSyntax fs_glob 现在真正支持目录前缀与 **，
 // desc 必须把两种 pattern 写法都讲清楚，且不能再出现「不支持」的误导说法。
 //

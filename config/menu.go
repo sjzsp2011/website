@@ -269,18 +269,6 @@ var DefaultMenuGroups = []*MenuGroup{
 				Backend:  "/plugin/storage",
 			},
 			{
-				Path:     "/plugin/commerce/user",
-				GroupKey: "plugin",
-				Name:     "用户管理",
-				Backend:  "/plugin/user",
-			},
-			{
-				Path:     "/plugin/commerce/group",
-				GroupKey: "plugin",
-				Name:     "用户组VIP",
-				Backend:  "/plugin/user/group",
-			},
-			{
 				Path:     "/plugin/channel/wechat",
 				GroupKey: "plugin",
 				Name:     "微信公众号",
@@ -291,36 +279,6 @@ var DefaultMenuGroups = []*MenuGroup{
 				GroupKey: "plugin",
 				Name:     "小程序配置",
 				Backend:  "/plugin/weapp",
-			},
-			{
-				Path:     "/plugin/commerce/order",
-				GroupKey: "plugin",
-				Name:     "订单管理",
-				Backend:  "/plugin/order",
-			},
-			{
-				Path:     "/plugin/commerce/pay",
-				GroupKey: "plugin",
-				Name:     "支付配置",
-				Backend:  "/plugin/pay",
-			},
-			{
-				Path:     "/plugin/commerce/finance",
-				GroupKey: "plugin",
-				Name:     "财务管理",
-				Backend:  "/plugin/finance",
-			},
-			{
-				Path:     "/plugin/commerce/retailer",
-				GroupKey: "plugin",
-				Name:     "分销管理",
-				Backend:  "/plugin/retailer",
-			},
-			{
-				Path:     "/plugin/withdraw",
-				GroupKey: "plugin",
-				Name:     "提现管理",
-				Backend:  "/plugin/withdraw",
 			},
 			{
 				Path:     "/plugin/佣金管理",

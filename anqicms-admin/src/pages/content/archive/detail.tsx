@@ -19,9 +19,6 @@ import {
   getDesignTemplateFiles,
   getModules,
   getSettingContent,
-  pluginGetUserGroups,
-  pluginGetUserInfo,
-  pluginGetUsers,
   saveArchive,
 } from '@/services';
 import { getPlaces, getPlaceSetting } from '@/services/place';
@@ -69,7 +66,6 @@ import {
 import dayjs from 'dayjs';
 import React from 'react';
 import { IntlShape } from 'react-intl';
-import { getRuntimeShopMode } from '@/utils/shopMode';
 import './index.less';
 const MarkdownEditor = React.lazy(() => import('@/components/markdown'));
 const NewAiEditor = React.lazy(() => import('@/components/newAiEditor'));
@@ -108,15 +104,6 @@ class ArchiveForm extends React.Component<intlProps> {
       },
     ],
     selectedArchives: [],
-    searchUsers: [
-      {
-        id: 0,
-        title: this.props.intl.formatMessage({
-          id: 'content.parent_id.empty',
-        }),
-      },
-    ],
-    selectedUser: {},
     categories: [],
     placeSetting: {},
     places: [],
@@ -150,10 +137,8 @@ class ArchiveForm extends React.Component<intlProps> {
     const res = await getModules();
     this.setState(
       {
-        // 商城模式产品走 /product 独立管理，这里排除；普通模式产品仍是内容模型
-        modules: getRuntimeShopMode()
-          ? (res.data || []).filter((item: any) => item.id !== 2)
-          : res.data || [],
+
+        modules: res.data || [],
       },
       () => {
         const searchParams = new URLSearchParams(window.location.search);
@@ -218,9 +203,7 @@ class ArchiveForm extends React.Component<intlProps> {
     // 获取分类
     getCategories().then((res) => {
       const list = res.data || [];
-      let categories = getRuntimeShopMode()
-        ? list.filter((item: any) => item.module_id !== 2)
-        : list;
+      let categories = list;
       this.setState({
         categories,
       });
@@ -306,10 +289,7 @@ class ArchiveForm extends React.Component<intlProps> {
       id: id,
     });
     const archive = res.data || { extra: {}, flag: null };
-    // 商城模式下产品有独立编辑页；普通模式下产品就是普通文档，留在本页编辑
-    if (archive.module_id === 2 && getRuntimeShopMode()) {
-      history.replace('/product/detail?id=' + archive.id);
-    }
+
     if (copy) {
       archive.id = 0;
       archive.parent_id = 0;
@@ -369,18 +349,6 @@ class ArchiveForm extends React.Component<intlProps> {
       ) {
         arcIds.push(...archive.extra[module.fields[i].field_name]?.value);
       }
-    }
-    if (archive.user_id > 0) {
-      pluginGetUserInfo({
-        id: archive.user_id,
-      }).then((res) => {
-        if (res.data) {
-          this.setState({
-            selectedUser: res.data,
-            searchUsers: [res.data],
-          });
-        }
-      });
     }
     // category_ids 问题
     if (archive.category_id > 0) {
@@ -1542,26 +1510,6 @@ class ArchiveForm extends React.Component<intlProps> {
     });
   };
 
-  onSearchUsers = (e: any) => {
-    pluginGetUsers({ q: e, pageSize: 10 }).then((res) => {
-      // 如果是已经有选择的 ParentId,则把它加入到开头
-      const searchItems: any[] = [];
-      if (this.state.selectedUser.id) {
-        searchItems.push(this.state.selectedUser);
-      } else {
-        searchItems.push({
-          id: 0,
-          title: this.props.intl.formatMessage({
-            id: 'content.parent_id.empty',
-          }),
-        });
-      }
-      this.setState({
-        searchUsers: searchItems.concat(res.data || []),
-      });
-    });
-  };
-
   render() {
     const {
       archive,
@@ -1583,7 +1531,6 @@ class ArchiveForm extends React.Component<intlProps> {
       timelineItemIndex,
       relations,
       searchArchives,
-      searchUsers,
       categories,
       placeSetting,
       newKey,
@@ -1878,75 +1825,6 @@ class ArchiveForm extends React.Component<intlProps> {
                           }}
                           extra={this.props.intl.formatMessage({
                             id: 'content.archive-template.description',
-                          })}
-                        />
-                      </Col>
-                      <Col sm={12} xs={24}>
-                        <ProFormDigit
-                          label={this.props.intl.formatMessage({
-                            id: 'content.price.name',
-                          })}
-                          name="price"
-                          fieldProps={{
-                            precision: 0,
-                            addonAfter: this.props.intl.formatMessage({
-                              id: 'content.price.suffix',
-                            }),
-                          }}
-                          extra={this.props.intl.formatMessage({
-                            id: 'content.papriceram.description',
-                          })}
-                        />
-                      </Col>
-                      <Col sm={12} xs={24}>
-                        <ProFormDigit
-                          label={this.props.intl.formatMessage({
-                            id: 'content.stock.name',
-                          })}
-                          name="stock"
-                          fieldProps={{
-                            precision: 0,
-                            addonAfter: this.props.intl.formatMessage({
-                              id: 'content.stock.suffix',
-                            }),
-                          }}
-                        />
-                      </Col>
-                      <Col sm={12} xs={24}>
-                        <ProFormSelect
-                          name="read_level"
-                          label={this.props.intl.formatMessage({
-                            id: 'content.read-level.name',
-                          })}
-                          request={async () => {
-                            const res = await pluginGetUserGroups({});
-                            return [
-                              {
-                                level: 0,
-                                title: this.props.intl.formatMessage({
-                                  id: 'content.unlimit',
-                                }),
-                                id: 0,
-                              },
-                            ].concat(res.data || []);
-                          }}
-                          fieldProps={{
-                            fieldNames: {
-                              label: 'title',
-                              value: 'level',
-                            },
-                            optionItemRender(item: any) {
-                              return (
-                                <div
-                                  dangerouslySetInnerHTML={{
-                                    __html: 'L' + item.level + item.title,
-                                  }}
-                                ></div>
-                              );
-                            },
-                          }}
-                          extra={this.props.intl.formatMessage({
-                            id: 'content.read-level.description',
                           })}
                         />
                       </Col>
@@ -3374,37 +3252,6 @@ class ArchiveForm extends React.Component<intlProps> {
                       extra={this.props.intl.formatMessage({
                         id: 'content.tag.placeholder',
                       })}
-                    />
-                  </Card>
-                  <Card
-                    className="aside-card"
-                    size="small"
-                    title={this.props.intl.formatMessage({
-                      id: 'content.author.name',
-                    })}
-                    extra={
-                      <Tag
-                        className="link"
-                        onClick={() => {
-                          history.push('/plugin/commerce/user');
-                        }}
-                      >
-                        <FormattedMessage id="setting.action.add" />
-                      </Tag>
-                    }
-                  >
-                    <ProFormSelect
-                      name="user_id"
-                      showSearch
-                      options={searchUsers.map((a: any) => ({
-                        label: a.user_name,
-                        value: a.id,
-                      }))}
-                      fieldProps={{
-                        onSearch: (e) => {
-                          this.onSearchUsers(e);
-                        },
-                      }}
                     />
                   </Card>
                   <Card

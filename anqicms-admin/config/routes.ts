@@ -80,117 +80,6 @@ export default [
         name: 'ai',
         component: './setting/ai',
       },
-      {
-        path: '/setting/currency',
-        name: 'currency',
-        component: './setting/currency',
-      },
-      {
-        path: '/setting/pay',
-        name: 'pay',
-        component: '@/pages/plugin/pay/index',
-      },
-    ],
-  },
-  {
-    path: '/order',
-    name: 'order',
-    icon: 'accountBook',
-    routes: [
-      {
-        path: '/order/index',
-        name: 'order',
-        component: '@/pages/plugin/order/index',
-      },
-      {
-        path: '/order/recall',
-        name: 'recall',
-        component: '@/pages/plugin/order/recall',
-      },
-      {
-        path: '/order/waybill',
-        name: 'waybill',
-        component: '@/pages/plugin/order/waybill',
-      },
-      {
-        path: '/order/communication',
-        name: 'communication',
-        component: '@/pages/plugin/order/communication',
-      },
-      {
-        path: '/order/service',
-        name: 'service',
-        component: '@/pages/plugin/order/service',
-      },
-      {
-        path: '/order/shipping',
-        name: 'shipping',
-        component: '@/pages/plugin/shipping/index',
-      },
-    ],
-  },
-  {
-    path: '/product',
-    name: 'product',
-    icon: 'product',
-    routes: [
-      {
-        path: '/product/index',
-        name: 'product',
-        component: '@/pages/content/product/index',
-      },
-      {
-        hideInMenu: true,
-        path: '/product/detail',
-        component: '@/pages/content/product/detail',
-      },
-      {
-        path: '/product/category',
-        name: 'category',
-        component: '@/pages/content/category/product/index',
-      },
-      {
-        hideInMenu: true,
-        path: '/product/category/detail',
-        component: '@/pages/content/category/product/detail',
-      },
-      // {
-      //   path: '/product/inventory',
-      //   name: 'inventory',
-      //   component: '@/pages/content/product/inventory',
-      // },
-      {
-        path: '/product/review',
-        name: 'review',
-        component: '@/pages/content/product/review',
-      },
-    ],
-  },
-  {
-    path: '/customer',
-    name: 'customer',
-    icon: 'team',
-    routes: [
-      {
-        path: '/customer/index',
-        name: 'customer',
-        component: '@/pages/plugin/user/index',
-      },
-      {
-        path: '/customer/group',
-        name: 'group',
-        component: '@/pages/plugin/group/index',
-      },
-      {
-        path: '/customer/guestbook',
-        name: 'guestbook',
-        component: '@/pages/plugin/guestbook/index',
-      },
-      {
-        path: '/customer/wishlist',
-        name: 'wishlist',
-        component: '@/pages/customer/wishlist',
-      },
     ],
   },
   {
@@ -213,52 +102,6 @@ export default [
         name: 'subscription',
         component: '@/pages/promotion/subscription',
       },
-      {
-        path: '/promotion/googlemerchant',
-        name: 'googlemerchant',
-        component: '@/pages/promotion/googlemerchant/index',
-      },
-      {
-        path: '/promotion/googlemerchant/callback',
-        component: '@/pages/promotion/googlemerchant/callback',
-      },
-    ],
-  },
-  {
-    path: '/sale',
-    name: 'sale',
-    icon: 'percentage',
-    routes: [
-      {
-        path: '/sale/index',
-        name: 'coupon',
-        component: '@/pages/sale/coupon',
-      },
-      {
-        path: '/sale/sales',
-        name: 'sales',
-        component: '@/pages/sale/sales',
-      },
-      {
-        path: '/sale/activity',
-        name: 'activity',
-        component: '@/pages/sale/activity',
-      },
-      // {
-      //   path: '/sale/package',
-      //   name: 'package',
-      //   component: '@/pages/sale/package',
-      // },
-      // {
-      //   path: '/sale/freeshipping',
-      //   name: 'freeshipping',
-      //   component: '@/pages/sale/freeshipping',
-      // },
-      // {
-      //   path: '/sale/buygifts',
-      //   name: 'buygifts',
-      //   component: '@/pages/sale/buygifts',
-      // },
     ],
   },
   {
@@ -491,56 +334,6 @@ export default [
         ],
       },
       {
-        path: '/plugin/commerce',
-        name: 'commerce',
-        type: 'commerce',
-        icon: 'order',
-        routes: [
-          {
-            path: '/plugin/commerce/user',
-            name: 'user',
-            type: 'shop',
-            component: '@/pages/plugin/user/index',
-            icon: 'user',
-          },
-          {
-            path: '/plugin/commerce/group',
-            name: 'group',
-            type: 'shop',
-            component: '@/pages/plugin/group/index',
-            icon: 'group',
-          },
-          {
-            path: '/plugin/commerce/order',
-            name: 'order',
-            type: 'shop',
-            component: '@/pages/plugin/order/index',
-            icon: 'order',
-          },
-          {
-            path: '/plugin/commerce/pay',
-            name: 'pay',
-            type: 'shop',
-            component: '@/pages/plugin/pay/index',
-            icon: 'pay',
-          },
-          {
-            path: '/plugin/commerce/finance',
-            name: 'finance',
-            type: 'shop',
-            component: '@/pages/plugin/finance/index',
-            icon: 'finance',
-          },
-          {
-            path: '/plugin/commerce/retailer',
-            name: 'retailer',
-            type: 'shop',
-            component: '@/pages/plugin/retailer/index',
-            icon: 'retailer',
-          },
-        ],
-      },
-      {
         path: '/plugin/channel',
         name: 'channel',
         type: 'channel',
@@ -749,47 +542,6 @@ export default [
     icon: 'lineChart',
     access: 'canAdmin',
     routes: [
-      {
-        path: '/statistic/liveview',
-        name: 'liveview',
-        component: '@/pages/statistic/liveview',
-      },
-      {
-        path: '/statistic/conversion',
-        name: 'conversion',
-        component: '@/pages/statistic/conversion',
-      },
-      {
-        path: '/statistic/orders',
-        name: 'orders',
-        component: '@/pages/statistic/orders',
-      },
-      {
-        path: '/statistic/products',
-        name: 'products',
-        component: '@/pages/statistic/products',
-      },
-      {
-        path: '/statistic/customers',
-        name: 'customers',
-        component: '@/pages/statistic/customers',
-      },
-      {
-        path: '/statistic/search',
-        name: 'search',
-        component: '@/pages/statistic/search',
-      },
-      {
-        hideInMenu: true,
-        path: '/statistic/search/detail',
-        name: 'searchdetail',
-        component: '@/pages/statistic/searchDetail',
-      },
-      {
-        path: '/statistic/coupons',
-        name: 'coupons',
-        component: '@/pages/statistic/coupons',
-      },
       {
         path: '/statistic/spider',
         name: 'spider',

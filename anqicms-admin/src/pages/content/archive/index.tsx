@@ -18,7 +18,6 @@ import {
   updateArchivesTime,
 } from '@/services';
 import { getCategories } from '@/services/category';
-import { getRuntimeShopMode } from '@/utils/shopMode';
 import { supportLanguages } from '@/utils';
 import { getStore } from '@/utils/store';
 import { PlusOutlined, StarOutlined } from '@ant-design/icons';
@@ -111,10 +110,9 @@ const ArchiveList: React.FC = () => {
   };
 
   const loadModules = async () => {
-    // 商城模式产品独立到 /product 管理，文档列表排除产品模块（module_id=2）；
-    // 普通内容模式下产品仍是内容模型，必须出现在模块切换里。
-    const shopMode = getRuntimeShopMode();
-    let res = await getModules(shopMode ? { exclude_id: 2 } : {});
+
+
+    let res = await getModules({});
     setModules(
       [
         { title: intl.formatMessage({ id: 'content.archive.all' }), id: 0 },
@@ -123,11 +121,7 @@ const ArchiveList: React.FC = () => {
     getCategories()
       .then((res) => {
         const list = res.data || [];
-        setCategories(
-          shopMode
-            ? list.filter((item: any) => item.module_id !== 2)
-            : list,
-        );
+        setCategories(list);
       })
       .catch();
   };
@@ -659,8 +653,7 @@ const ArchiveList: React.FC = () => {
                 },
               ]
                 .concat(res.data || [])
-                // 仅商城模式排除产品模块
-                .filter((item: any) => !(getRuntimeShopMode() && item.id === 2))
+
                 .map((item: any) => ({
                   label: item.name,
                   value: item.id,

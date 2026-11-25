@@ -139,7 +139,6 @@ func TestDomainOfKnownPaths(t *testing.T) {
 		{"/system/api/setting/nav/list", intent.DomainStructure}, // 二级例外：导航属站点结构
 		{"/system/api/plugin/push/baidu", intent.DomainSeo},      // plugin 必须看二级
 		{"/system/api/plugin/backup/restore", intent.DomainSiteOps},
-		{"/system/api/plugin/user/list", intent.DomainCommerce},
 		{"/system/api/plugin/material/list", intent.DomainContentOps},
 		{"/system/api/admin/list", intent.DomainAccount},
 		{"/system/api/statistic/spider", intent.DomainTraffic},

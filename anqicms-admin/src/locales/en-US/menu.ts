@@ -160,7 +160,6 @@ export default {
   'menu.sale.freeshipping': 'Free Shipping',
   'menu.sale.buygifts': 'Buy X Get Y',
   'menu.promotion.subscription': 'Subscription',
-  'menu.promotion.googlemerchant': 'Google Merchant',
   'menu.promotion.automation': 'Automation',
   'menu.promotion.sendmail': 'Email Notification',
   'menu.customer.customer': 'Customers',

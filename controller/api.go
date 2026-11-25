@@ -1046,121 +1046,13 @@ func ApiLogStatistic(ctx iris.Context) {
 
 	if req.Action == request.LogActionViews {
 		LogAccess(ctx, &req)
-		// 记录archive的浏览量
 		if req.Type == request.LogTypeArchive {
 			archive := currentSite.GetArchiveByIdFromCache(req.Id)
 			if archive != nil {
 				_ = archive.AddViews(currentSite.DB)
-				// 产品判定走 modules.kind，不再硬编码 id==2
-				if currentSite.IsProductModule(archive.ModuleId) {
-					// 统计文章的阅读数
-					req.Type = request.LogTypeProductView
-					// 推送事件
-					userId := ctx.Values().GetUintDefault("userId", 0)
-					if userId > 0 {
-						userInfo, ok := ctx.Values().Get("userInfo").(*model.User)
-						if !ok {
-							userInfo = &model.User{
-								Id: userId,
-							}
-						}
-						// 推送事件
-						currentSite.CreateEvent(provider.EventProductViewd, map[string]interface{}{
-							"id":    archive.Id,
-							"title": archive.Title,
-							"link":  archive.Link,
-							"logo":  archive.Logo,
-							"price": archive.Price / 100,
-						}, userInfo)
-					}
-				} else {
-					// 其它
-					req.Type = request.LogTypeArticleView
-				}
 			}
 		}
 	}
-	_ = currentSite.ShopCountLog.Write(&req)
 
 	ctx.StatusCode(iris.StatusNoContent)
-}
-
-func ApiImportReview(ctx iris.Context) {
-	currentSite := provider.CurrentSite(ctx)
-	orderId := ctx.PostValueTrim("order_id")
-	archiveId := ctx.PostValueInt64Default("archive_id", 0)
-	archiveSkuId := ctx.PostValueInt64Default("archive_sku_id", 0)
-	userName := ctx.PostValueTrim("user_name")
-	email := ctx.PostValueTrim("email")
-	score := ctx.PostValueIntDefault("score", 5)
-	content := ctx.PostValueTrim("content")
-	images, _ := ctx.PostValues("images[]")
-	if len(images) == 1 && strings.HasPrefix(images[0], "[") {
-		err := json.Unmarshal([]byte(images[0]), &images)
-		if err != nil {
-			images = nil
-		}
-	}
-	userId := uint(ctx.PostValueIntDefault("user_id", 0))
-	var user *model.User
-	var err error
-	if userId > 0 {
-		user, err = currentSite.GetUserInfoById(userId)
-		if err == nil {
-			userName = user.RealName
-			email = user.Email
-		}
-	}
-	var order *model.Order
-	if orderId != "" {
-		order, err = currentSite.GetOrderInfoByOrderId(orderId)
-		if err != nil {
-			ctx.JSON(iris.Map{
-				"code": config.StatusFailed,
-				"msg":  err.Error(),
-			})
-			return
-		}
-	}
-
-	if score == 0 {
-		score = 5
-	}
-
-	review := request.OrderReviewRequest{
-		UserId:       userId,
-		OrderId:      orderId,
-		ArchiveId:    archiveId,
-		ArchiveSkuId: archiveSkuId,
-		Ip:           ctx.RemoteAddr(),
-		UserName:     userName,
-		Email:        email,
-		Score:        score,
-		Content:      content,
-		Images:       images,
-		Status:       1,
-	}
-
-	if order != nil {
-		for _, v := range order.Details {
-			newItem := review
-			newItem.ArchiveId = v.GoodsId
-			newItem.ArchiveSkuId = v.GoodsSkuId
-			err = currentSite.SaveOrderReview(&newItem)
-			if err != nil {
-				ctx.JSON(iris.Map{
-					"code": config.StatusFailed,
-					"msg":  err.Error(),
-				})
-				return
-			}
-		}
-	} else {
-		err = currentSite.SaveOrderReview(&review)
-	}
-
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  "OK",
-	})
 }

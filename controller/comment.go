@@ -113,47 +113,6 @@ func CommentPublish(ctx iris.Context) {
 	}
 }
 
-func CommentPraise(ctx iris.Context) {
-	currentSite := provider.CurrentSite(ctx)
-	if !strings.HasPrefix(ctx.RequestPath(false), currentSite.BaseURI) {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  "Not Found",
-		})
-		return
-	}
-	var req request.PluginComment
-	req.Id = uint(ctx.PostValueIntDefault("id", 0))
-	userId := ctx.Values().GetIntDefault("userId", 0)
-
-	comment, err := currentSite.GetCommentById(req.Id)
-	if err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  err.Error(),
-		})
-		return
-	}
-	// 检查是否点赞过
-	_, err = currentSite.AddCommentPraise(uint(userId), int64(comment.Id), comment.ArchiveId)
-	if err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  err.Error(),
-		})
-		return
-	}
-
-	comment.VoteCount += 1
-	comment.Active = true
-
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  currentSite.TplTr("LikeSuccessfully"),
-		"data": comment,
-	})
-}
-
 func CommentList(ctx iris.Context) {
 	currentSite := provider.CurrentSite(ctx)
 	if !strings.HasPrefix(ctx.RequestPath(false), currentSite.BaseURI) {

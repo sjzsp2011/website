@@ -160,7 +160,6 @@ export default {
   'menu.sale.freeshipping': '免運費',
   'menu.sale.buygifts': '買 X 送 Y',
   'menu.promotion.subscription': '訂閱',
-  'menu.promotion.googlemerchant': 'Google Merchant',
   'menu.promotion.automation': '自动营销',
   'menu.promotion.sendmail': '郵件提醒',
   'menu.customer.customer': '顧客',

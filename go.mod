@@ -16,8 +16,6 @@ require (
 	github.com/flosch/pongo2/v6 v6.1.0
 	github.com/getbrevo/brevo-go v1.1.3
 	github.com/getlantern/systray v1.2.2
-	github.com/go-pay/gopay v1.5.123
-	github.com/go-pay/xlog v0.0.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/gomarkdown/markdown v0.0.0-20261109103609-13f93121d67a
@@ -48,7 +46,6 @@ require (
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
-	github.com/stripe/stripe-go/v82 v82.5.1
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.76
 	github.com/upyun/go-sdk/v3 v3.0.4
 	github.com/wneessen/go-mail v0.8.2
@@ -106,9 +103,6 @@ require (
 	github.com/getlantern/hidden v0.0.0-20190325191715-f02dbb02be55 // indirect
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-pay/crypto v0.0.3 // indirect
-	github.com/go-pay/util v0.0.4 // indirect
-	github.com/go-pay/xtime v0.0.2 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect

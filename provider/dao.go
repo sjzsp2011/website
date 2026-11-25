@@ -217,8 +217,6 @@ func AutoMigrateDB(db *gorm.DB, force bool) error {
 			&model.ActivitySku{},
 			&model.OrderService{},
 			&model.OrderServiceAddon{},
-			&model.ProductSyncStatus{},
-			&model.ProductSyncLog{},
 			&model.PaymentAccount{},
 			&model.PaymentStatistic{},
 			&model.MailPlan{},

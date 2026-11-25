@@ -132,8 +132,6 @@ func manageRoute(app *iris.Application) {
 			setting.Post("/sensitive/check", manageController.SettingSensitiveWordsCheck)
 			setting.Post("/sensitive/sync", manageController.SettingSensitiveWordsSync)
 			setting.Post("/migratedb", manageController.SettingMigrateDB)
-			setting.Get("/currency", manageController.SettingCurrency)
-			setting.Post("/currency", manageController.SettingCurrencyForm)
 		}
 
 		collector := manage.Party("/collector", middleware.ParseAdminToken, middleware.AdminPermission)
@@ -212,14 +210,6 @@ func manageRoute(app *iris.Application) {
 			statistic.Get("/include/detail", manageController.GetSpiderIncludeDetail)
 			statistic.Get("/summary", manageController.GetStatisticsSummary)
 			statistic.Get("/dashboard", manageController.GetStatisticsDashboard)
-			statistic.Get("/conversion", manageController.GetStatisticConversion)
-			statistic.Get("/coupon", manageController.GetStatisticCoupon)
-			statistic.Get("/customer", manageController.GetStatisticCustomer)
-			statistic.Get("/live", manageController.GetStatisticLive)
-			statistic.Get("/order", manageController.GetStatisticOrder)
-			statistic.Get("/product", manageController.GetStatisticProduct)
-			statistic.Get("/search", manageController.GetStatisticSearch)
-			statistic.Get("/search/detail", manageController.GetStatisticSearchDetail)
 		}
 
 		design := manage.Party("/design", middleware.ParseAdminToken, middleware.AdminPermission)
@@ -388,22 +378,6 @@ func manageRoute(app *iris.Application) {
 				transfer.Post("/start", manageController.TransferWebData)
 			}
 
-			user := plugin.Party("/user")
-			{
-				user.Get("/fields", manageController.PluginUserFieldsSetting)
-				user.Post("/fields", manageController.PluginUserFieldsSettingForm)
-				user.Post("/field/delete", manageController.PluginUserFieldsDelete)
-				user.Get("/list", manageController.PluginUserList)
-				user.Get("/detail", manageController.PluginUserDetail)
-				user.Post("/detail", manageController.PluginUserDetailForm)
-				user.Post("/balance", manageController.PluginUserChangeBalance)
-				user.Post("/delete", manageController.PluginUserDelete)
-				user.Get("/group/list", manageController.PluginUserGroupList)
-				user.Get("/group/detail", manageController.PluginUserGroupDetail)
-				user.Post("/group/detail", manageController.PluginUserGroupDetailForm)
-				user.Post("/group/delete", manageController.PluginUserGroupDelete)
-			}
-
 			weapp := plugin.Party("/weapp")
 			{
 				weapp.Get("/config", manageController.PluginWeappConfig)
@@ -424,92 +398,6 @@ func manageRoute(app *iris.Application) {
 				wechat.Post("/menu/save", manageController.PluginWechatMenuSave)
 				wechat.Post("/menu/delete", manageController.PluginWechatMenuDelete)
 				wechat.Post("/menu/sync", manageController.PluginWechatMenuSync)
-			}
-
-			retailer := plugin.Party("/retailer")
-			{
-				retailer.Get("/list", manageController.PluginGetRetailers)
-				retailer.Get("/detail", manageController.PluginUserDetail)
-				retailer.Get("/config", manageController.PluginRetailerConfig)
-				retailer.Post("/config", manageController.PluginRetailerConfigForm)
-				retailer.Post("/realname", manageController.PluginRetailerSetRealName)
-				retailer.Post("/apply", manageController.PluginRetailerApply)
-			}
-
-			pay := plugin.Party("/pay")
-			{
-				pay.Get("/accounts", manageController.PluginGetPaymentAccounts)
-				pay.Get("/detail", manageController.PluginGetPaymentAccountDetail)
-				pay.Post("/detail", manageController.PluginSavePaymentAccount)
-				pay.Post("/delete", manageController.PluginDeletePaymentAccount)
-				pay.Post("/upload", manageController.PluginPayUploadFile)
-				pay.Get("/statistic", manageController.PluginPayStatistic)
-			}
-
-			order := plugin.Party("/order")
-			{
-				order.Get("/config", manageController.PluginOrderConfig)
-				order.Post("/config", manageController.PluginOrderConfigForm)
-				order.Get("/list", manageController.PluginOrderList)
-				order.Get("/detail", manageController.PluginOrderDetail)
-				order.Post("/pay", manageController.PluginOrderSetPay)
-				order.Post("/deliver", manageController.PluginOrderSetDeliver)
-				order.Post("/finished", manageController.PluginOrderSetFinished)
-				order.Post("/canceled", manageController.PluginOrderSetCanceled)
-				order.Post("/refund", manageController.PluginOrderSetRefund)
-				order.Post("/refund/apply", manageController.PluginOrderApplyRefund)
-				order.Post("/export", manageController.PluginOrderExport)
-				order.Get("/reviews", manageController.PluginGetOrderReviews)
-				order.Get("/review", manageController.PluginGetOrderReview)
-				order.Post("/review/save", manageController.PluginSaveOrderReview)
-				order.Post("/review/delete", manageController.PluginDeleteOrderReview)
-				// 附加服务
-				order.Get("/services", manageController.PluginGetOrderServices)
-				order.Get("/service", manageController.PluginGetOrderService)
-				order.Post("/service/save", manageController.PluginSaveOrderService)
-				order.Post("/service/delete", manageController.PluginDeleteOrderService)
-			}
-			communication := plugin.Party("/communication")
-			{
-				communication.Get("/setting", manageController.GetCommunicationSetting)
-				communication.Post("/setting", manageController.SaveCommunicationSetting)
-				communication.Get("/order/list", manageController.CommunicationOrderList)
-				communication.Get("/order/detail", manageController.CommunicationOrderDetail)
-				communication.Post("/order/images/save", manageController.CommunicationOrderSaveImages)
-				communication.Post("/order/close", manageController.CommunicationOrderClose)
-				communication.Post("/quote/send", manageController.CommunicationSendQuote)
-				communication.Post("/message/send", manageController.CommunicationMessageSend)
-				communication.Post("/message/delete", manageController.CommunicationMessageDelete)
-				communication.Get("/message/list", manageController.CommunicationMessageList)
-			}
-
-			activity := plugin.Party("/activity")
-			{
-				activity.Get("/list", manageController.PluginActivityList)
-				activity.Get("/detail", manageController.PluginActivityDetail)
-				activity.Post("/detail", manageController.PluginActivityDetailForm)
-				activity.Post("/delete", manageController.PluginActivityDelete)
-			}
-
-			withdraw := plugin.Party("/withdraw")
-			{
-				withdraw.Get("/list", manageController.PluginWithdrawList)
-				withdraw.Get("/detail", manageController.PluginWithdrawDetail)
-				withdraw.Post("/approval", manageController.PluginWithdrawSetApproval)
-				withdraw.Post("/finished", manageController.PluginWithdrawSetFinished)
-				withdraw.Post("/apply", manageController.PluginWithdrawSetApply)
-			}
-
-			commission := plugin.Party("/commission")
-			{
-				commission.Get("/list", manageController.PluginCommissionList)
-				commission.Get("/detail", manageController.PluginCommissionDetail)
-			}
-
-			finance := plugin.Party("/finance")
-			{
-				finance.Get("/list", manageController.PluginFinanceList)
-				finance.Get("/detail", manageController.PluginFinanceDetail)
 			}
 
 			// 全文索引
@@ -665,39 +553,6 @@ func manageRoute(app *iris.Application) {
 				subscriber.Post("/category/delete", manageController.DeleteSubscriberCategory)
 			}
 
-			wishlist := plugin.Party("/wishlist")
-			{
-				wishlist.Get("/list", manageController.PluginGetWishlist)
-			}
-
-			coupon := plugin.Party("/coupon")
-			{
-				coupon.Get("/list", manageController.GetCouponList)
-				coupon.Get("/detail", manageController.CouponDetail)
-				coupon.Post("/detail", manageController.CouponDetailForm)
-				coupon.Post("/delete", manageController.DeleteCoupon)
-				coupon.Get("/code/list", manageController.GetCouponCodeList)
-				coupon.Post("/code/make", manageController.MakeCouponCode)
-				coupon.Post("/code/delete", manageController.DeleteCouponCode)
-				coupon.Post("/code/detail", manageController.SaveCouponCode)
-				coupon.Get("/archives", manageController.GetCouponArchives)
-				coupon.Post("/archives/add", manageController.AddCouponArchives)
-				coupon.Post("/archives/delete", manageController.DeleteCouponArchives)
-			}
-
-			googlemerchant := plugin.Party("/googlemerchant")
-			{
-				googlemerchant.Get("/config", manageController.PluginGoogleMerchantConfig)
-				googlemerchant.Post("/config", manageController.PluginGoogleMerchantConfigSave)
-				googlemerchant.Get("/auth/url", manageController.PluginGoogleMerchantAuthUrl)
-				googlemerchant.Post("/callback", manageController.PluginGoogleMerchantCallback)
-				googlemerchant.Post("/account/select", manageController.PluginGoogleMerchantAccountSelect)
-				googlemerchant.Post("/sync", manageController.PluginGoogleMerchantSync)
-				googlemerchant.Post("/sync/delete", manageController.PluginGoogleMerchantSyncDelete)
-				googlemerchant.Get("/sync/statuses", manageController.PluginGoogleMerchantSyncStatusList)
-				googlemerchant.Get("/sync/logs", manageController.PluginGoogleMerchantSyncLogs)
-			}
-
 			place := plugin.Party("/place")
 			{
 				place.Get("/setting", manageController.PluginGetPlaceSetting)
@@ -708,11 +563,6 @@ func manageRoute(app *iris.Application) {
 				place.Post("/delete", manageController.PlaceDelete)
 			}
 
-			shipping := plugin.Party("/shipping")
-			{
-				shipping.Get("/setting", manageController.PluginGetShippingSetting)
-				shipping.Post("/setting", manageController.PluginSaveShippingSetting)
-			}
 		}
 	}
 }

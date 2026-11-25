@@ -67,7 +67,6 @@ type Website struct {
 	quickImportStatus       *QuickImportArchive
 	AkismetClient           *AkismetClient
 	googleAuthConfig        *oauth2.Config
-	googleMerchantConfig    *oauth2.Config
 	llmsBuildStatus         *LLMsBuildStatus
 
 	System   *config.SystemConfig
@@ -124,7 +123,6 @@ type Website struct {
 	backLanguage string
 	ctx          iris.Context // 这个类型是指针，因此只能在拷贝后赋值
 	Template     *StoreTemplates
-	ShopCountLog *ShopCountLog
 	MailService  *MailService
 	// ai
 	AiSrv *AiChatService

@@ -262,7 +262,7 @@ func TestAPICatalogDomainsCoverIntentEnum(t *testing.T) {
 
 	// 枚举值来自 pkg/mcp/intent/catalog_api.go 的 domain ParamSpec。
 	declared := []string{
-		"siteops", "system", "contentops", "commerce", "content", "seo", "channel",
+		"siteops", "system", "contentops", "content", "seo", "channel",
 		"design", "account", "interaction", "structure", "traffic", "media",
 	}
 	for _, d := range declared {

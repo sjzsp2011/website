@@ -8,7 +8,6 @@ import (
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
 	"github.com/kataras/iris/v12"
-	"gorm.io/gorm"
 	"kandaoni.com/anqicms/config"
 	"kandaoni.com/anqicms/controller"
 	"kandaoni.com/anqicms/model"
@@ -269,50 +268,6 @@ func resolveArchiveParams(p graphql.ResolveParams) (interface{}, error) {
 	return currentSite.ApiGetArchiveParams(req)
 }
 
-func resolveSku(p graphql.ResolveParams) (interface{}, error) {
-	rootValue := p.Info.RootValue.(map[string]interface{})
-	currentSite := rootValue["site"].(*provider.Website)
-	ctx := rootValue["ctx"].(iris.Context)
-
-	id, _ := p.Args["id"].(int)
-	urlToken, _ := p.Args["url_token"].(string)
-	if p.Args["filename"] != nil {
-		urlToken, _ = p.Args["filename"].(string)
-	}
-
-	userId := ctx.Values().GetUintDefault("userId", 0)
-
-	req := &request.ApiArchiveRequest{
-		Id:       int64(id),
-		UrlToken: urlToken,
-		UserId:   userId,
-	}
-
-	return currentSite.ApiGetSku(req)
-}
-
-func resolveUser(p graphql.ResolveParams) (interface{}, error) {
-	rootValue := p.Info.RootValue.(map[string]interface{})
-	currentSite := rootValue["site"].(*provider.Website)
-	ctx := rootValue["ctx"].(iris.Context)
-
-	id, ok := p.Args["id"].(int)
-	if !ok {
-		userId := ctx.Values().GetUintDefault("userId", 0)
-		if userId == 0 {
-			return nil, nil
-		}
-		id = int(userId)
-	}
-
-	user, err := currentSite.GetUserInfoById(uint(id))
-	if err != nil {
-		return nil, err
-	}
-
-	return user, nil
-}
-
 func resolveCategory(p graphql.ResolveParams) (interface{}, error) {
 	rootValue := p.Info.RootValue.(map[string]interface{})
 	currentSite := rootValue["site"].(*provider.Website)
@@ -507,45 +462,6 @@ func resolveComments(p graphql.ResolveParams) (interface{}, error) {
 	}, nil
 }
 
-func resolveReviews(p graphql.ResolveParams) (interface{}, error) {
-	rootValue := p.Info.RootValue.(map[string]interface{})
-	currentSite := rootValue["site"].(*provider.Website)
-	itemId, _ := p.Args["id"].(int)
-	userId, _ := p.Args["user_id"].(int)
-	order, _ := p.Args["order"].(string)
-	limit, _ := p.Args["limit"].(int)
-	if limit <= 0 {
-		limit = 10
-	}
-	offset, _ := p.Args["offset"].(int)
-	page, _ := p.Args["page"].(int)
-	if page < 1 {
-		page = 1
-	}
-
-	reviews, total := currentSite.GetOrderReviews(func(tx *gorm.DB) *gorm.DB {
-		if userId > 0 {
-			tx = tx.Where("user_id = ?", userId)
-		}
-		if itemId > 0 {
-			tx = tx.Where("archive_id = ?", itemId)
-		}
-		return tx.Where("status = ?", 1)
-	}, order, page, limit, offset)
-
-	return iris.Map{
-		"items": reviews,
-		"total": total,
-	}, nil
-}
-
-func resolveCurrency(p graphql.ResolveParams) (interface{}, error) {
-	rootValue := p.Info.RootValue.(map[string]interface{})
-	currentSite := rootValue["site"].(*provider.Website)
-
-	return currentSite.Currency, nil
-}
-
 func resolveSystemSetting(p graphql.ResolveParams) (interface{}, error) {
 	rootValue := p.Info.RootValue.(map[string]interface{})
 	currentSite := rootValue["site"].(*provider.Website)
@@ -630,9 +546,4 @@ func resolveNavs(p graphql.ResolveParams) (interface{}, error) {
 	navs := currentSite.GetNavsFromCache(uint(typeId), showType)
 
 	return navs, nil
-}
-
-func createReview(p graphql.ResolveParams) (interface{}, error) {
-	// todo
-	return nil, nil
 }

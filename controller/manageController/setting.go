@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/kataras/iris/v12"
-	"gorm.io/gorm"
 	"kandaoni.com/anqicms/config"
 	"kandaoni.com/anqicms/library"
 	"kandaoni.com/anqicms/model"
@@ -126,7 +125,6 @@ func SettingSystemForm(ctx iris.Context) {
 	currentSite.System.SiteClose = req.SiteClose
 	currentSite.System.SiteCloseTips = req.SiteCloseTips
 	currentSite.System.BanSpider = req.BanSpider
-	currentSite.System.ShopMode = req.ShopMode
 	if currentSite.System.BaseUrl != req.BaseUrl {
 		// 如果本来storageUrl = baseUrl
 		if currentSite.PluginStorage.StorageUrl == currentSite.System.BaseUrl {
@@ -154,15 +152,6 @@ func SettingSystemForm(ctx iris.Context) {
 	}
 	if currentSite.MultiLanguage != nil {
 		currentSite.MultiLanguage.DefaultLanguage = currentSite.System.Language
-	}
-
-	accounts := currentSite.GetPaymentAccounts(func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("pay_way = ? and status = 1", config.PayWayPaypal)
-	})
-	if len(accounts) > 0 {
-		for _, account := range accounts {
-			currentSite.UpdatePaypalWebhook(account)
-		}
 	}
 
 	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateSystemConfiguration"))
@@ -1022,45 +1011,5 @@ func SettingAiForm(ctx iris.Context) {
 			"chat":  chatSettings.Configs,
 			"mcp":   chatSettings.Mcp,
 		},
-	})
-}
-
-// SettingCurrency 获取商城币种与货币符号设置（无参数）。
-func SettingCurrency(ctx iris.Context) {
-	currentSite := provider.CurrentSubSite(ctx)
-
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  "",
-		"data": currentSite.Currency,
-	})
-}
-
-// SettingCurrencyForm 保存商城币种与货币符号设置（整体覆盖）。
-func SettingCurrencyForm(ctx iris.Context) {
-	currentSite := provider.CurrentSubSite(ctx)
-	var req config.CurrencyConfig
-	if !readJSONPayload(ctx, &req) {
-		return
-	}
-
-	currentSite.Currency.Name = req.Name
-	currentSite.Currency.Currency = req.Currency
-	currentSite.Currency.Symbol = req.Symbol
-
-	err := currentSite.SaveSettingValue(provider.CurrencySettingKey, currentSite.Currency)
-	if err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  err.Error(),
-		})
-		return
-	}
-
-	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateSystemConfiguration"))
-
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  ctx.Tr("ConfigurationUpdated"),
 	})
 }

@@ -122,23 +122,6 @@ var preserveGetParam = map[string]string{}
 //
 // ⚠️ 这里是**路径**而不是 cap 名：同一个 POST 路径可能被多个意图共用。
 var partialInvokePaths = map[string]bool{
-	// 会员：provider/user.go 有 15 处 `if req.UpdateAll || req.X != ""`
-	// （UserName/RealName/Birthday/Email/Phone/Status…），有开关。
-	// 修复前它在 invokeRouteOverwriteFields 里（补齐兜底），
-	// 加 partial 后已从那张表移除——两套机制叠加是多余的，且补齐有风险。
-	normalizeEndpointPath("/plugin/user/detail"): true,
-	// 会员分组：2026-10-29 起 SaveUserGroupInfo 改为「先读库再按指针合并」，
-	// request.UserGroupRequest 也有 UpdateAll/Partial，端点自己能只覆盖传入字段。
-	normalizeEndpointPath("/plugin/user/group/detail"): true,
-	// 优惠券：2026-10-29 起 request.CouponRequest 指针化并加了 UpdateAll/Partial，
-	// provider.SaveCoupon 用 library.Assign 统一「非 nil 才写」。
-	// 之前它在 invokeRouteOverwriteFields 里靠 GET 回查补齐，但补齐是**兜底**：
-	// 回查失败（券被删、读接口变更）就退回全量覆盖，面额被清成 0 而回执照旧 ok。
-	// 现在端点自己就能只覆盖传入字段，补齐既多余又有用派生值覆盖真值的风险。
-	normalizeEndpointPath("/plugin/coupon/detail"): true,
-	// 营销活动：同上。SaveActivity 的 skus 用 nil/[]/*[] 三态区分
-	// 「不动 / 清空全部 / 按列表同步」，不传规格即不动，不会再删光。
-	normalizeEndpointPath("/plugin/activity/detail"): true,
 	// 素材：2026-10-29 起 request.PluginMaterial 指针化 + UpdateAll/Partial，
 	// provider.SaveMaterial 用 library.Assign。「改标题把正文清空」不再发生；
 	// 同时 Status 不再硬编码为 1（素材终于可以禁用），md5 改为取当前内容。
@@ -288,7 +271,7 @@ func invokeRoutes(intentName string, routes map[string]string, renames ...map[st
 
 // domainIntentCatalog 是补齐域的意图清单，由 init 合并进总的 IntentCatalog。
 // action 的归一化 list/detail/save/delete/setting_get/setting_save ...
-var domainIntentCatalog = append([]*IntentSpec{
+var domainIntentCatalog = []*IntentSpec{
 	// ───────────────────────── 内容域 ─────────────────────────
 	{
 		Name: "content_place", Title: "管理城市站", Domain: DomainContent, Risk: RiskWrite,
@@ -534,150 +517,6 @@ var domainIntentCatalog = append([]*IntentSpec{
 		}),
 	},
 
-	// ───────────────────────── 交易域 ─────────────────────────
-	// 合并 commerce_user(原 catalog.go) + commerce_group + commerce_retailer 为单一 commerce 工具。
-	{
-		Name: "commerce", Title: "会员/分组/分销商", Domain: DomainCommerce, Risk: RiskWrite,
-		Desc: "会员的增删改查与订单列表，会员分组的增删改查，分销商配置与审核。**默认关闭**，需 ExposedIntents 显式开启。" +
-			"action: user_list/user_get/user_create/user_update/user_delete/user_orders/group_list/group_detail/group_save/group_delete/retailer_list/retailer_detail/retailer_setting_get/retailer_setting_save/retailer_apply/retailer_realname/wishlist_list。" +
-			"user_update 是**部分更新**，只传要改的字段即可，未传的字段自动沿用原值。" +
-			"group_save 与 retailer_setting_save 是全量覆盖语义，未登记的字段会被清成零值。" +
-			"wishlist_list 只读：列出会员收藏的商品，可按 values.user_id 筛选。",
-		// 2026-10-07：默认关闭（交易域未随站点发行）。
-		// desc 里原先那段「意图层会先回查再补齐」的括号注释已移除：它描述的是
-		// preserveOnUpdate 机制，而该机制已于 2026-10-03 随根因修复删除
-		// （回查旧值再写回不仅多余还有害，读端点会覆写字段）。
-		// 留着等于在 desc 里陈述一个不存在的机制。面向调用方只需讲可观察的契约。
-		DefaultOff: true,
-		Params: map[string]ParamSpec{
-			"action":    {Type: "string", Desc: "操作", Required: true, Enum: []string{"user_list", "user_get", "user_create", "user_update", "user_delete", "user_orders", "group_list", "group_detail", "group_save", "group_delete", "retailer_list", "retailer_detail", "retailer_setting_get", "retailer_setting_save", "retailer_apply", "retailer_realname", "wishlist_list"}},
-			"id":        {Type: "integer", Desc: "会员/分组/分销商 ID（retailer_apply / retailer_realname 也用会员的 id）"},
-			"user_name": {Type: "string", Desc: "用户名（user_create 必填且全站唯一，重名直接报错）"},
-			"password":  {Type: "string", Desc: "密码（user_create 必填；user_update 只在改密码时传）"},
-			"email":     {Type: "string", Desc: "邮箱"},
-			"phone":     {Type: "string", Desc: "手机号"},
-			"status":    {Type: "integer", Desc: "会员状态，**整数不是布尔值**：0=待审核，1=正常，-1=禁用"},
-			"page":      {Type: "integer", Desc: "页码，从 1 开始（*_list / user_orders）", Default: 1},
-			"page_size": {Type: "integer", Desc: "每页条数（*_list / user_orders）", Default: 20},
-			"values": {Type: "object", Desc: "按 action 传：" +
-				"· user_update: **部分更新**，只传要改的字段；未传的 email/phone/group_id/status 等会自动沿用原值\n" +
-				"· user_create: user_name(必填、全站唯一，重名直接报错)、password(必填)、email、phone、group_id、status（成功回执 data.id 即新建用户 ID）\n" +
-				"· group_save: title、description、level(整数，越大权限越高)、price、favorable_price\n" +
-				"· retailer_setting_save: allow_self(整数 0/1)、become_retailer(整数，0=需审核 1=自动成为分销员)\n" +
-				"· retailer_apply: is_retailer(整数 0/1)\n" +
-				"· retailer_realname: real_name(真实姓名)\n" +
-				"· wishlist_list: 可选 user_id 只看某个会员的收藏；不传则列出全站愿望清单"},
-		},
-		Required: []string{"action"},
-		Caps:     []string{"api_invoke"},
-		Compose: invokeRoutes("commerce", map[string]string{
-			"user_list":             "GET /plugin/user/list",
-			"user_get":              "GET /plugin/user/detail",
-			"user_create":           "POST /plugin/user/detail",
-			"user_update":           "POST /plugin/user/detail",
-			"user_delete":           "POST /plugin/user/delete",
-			"user_orders":           "GET /plugin/order/list",
-			"group_list":            "GET /plugin/user/group/list",
-			"group_detail":          "GET /plugin/user/group/detail",
-			"group_save":            "POST /plugin/user/group/detail",
-			"group_delete":          "POST /plugin/user/group/delete",
-			"retailer_list":         "GET /plugin/retailer/list",
-			"retailer_detail":       "GET /plugin/user/detail",
-			"retailer_setting_get":  "GET /plugin/retailer/config",
-			"retailer_setting_save": "POST /plugin/retailer/config",
-			"retailer_apply":        "POST /plugin/retailer/apply",
-			"retailer_realname":     "POST /plugin/retailer/realname",
-			"wishlist_list":         "GET /plugin/wishlist/list",
-		}),
-	},
-	{
-		Name: "commerce_order", Title: "管理订单", Domain: DomainCommerce, Risk: RiskWrite,
-		// 2026-10-07：默认关闭。订单状态流转（发货/取消/退款/支付）直接动资金与履约，
-		// 且 refund/canceled 不可回滚——误操作的代价是真金白银，不是「改回来」能解决的。
-		Desc:       "订单的查询与状态流转（发货/取消/完成/退款/支付）。**默认关闭**，需 ExposedIntents 显式开启。action: list/detail/setting_get/setting_save/deliver/canceled/finished/refund/refund_apply/pay/export。",
-		DefaultOff: true,
-		Params: map[string]ParamSpec{
-			"action": {Type: "string", Desc: "操作", Required: true, Enum: []string{
-				"list", "detail", "setting_get", "setting_save", "deliver", "canceled", "finished",
-				"refund", "refund_apply", "pay", "export"}},
-			"id":        {Type: "string", Desc: "**订单号（业务单号，不是数据库自增 id）**，格式形如 wc2021101838889109642 / 202609300733050495，取自 list 返回项的 order_id 字段。detail/deliver/canceled/finished/refund/refund_apply/pay 必填（端点侧字段名是 order_id，已自动换算）"},
-			"status":    {Type: "string", Desc: "订单状态过滤/目标状态：waiting,paid,delivery,finished,refunding,closed"},
-			"page":      {Type: "integer", Desc: "页码，从 1 开始（list）", Default: 1},
-			"page_size": {Type: "integer", Desc: "每页条数（list）", Default: 20},
-			"values":    {Type: "object", Desc: "订单参数/配置参数。deliver 传 express_company、tracking_number；pay 传 user_id、pay_way；export 传 start_time、end_time；setting_save 传 no_process、auto_finish_day、auto_close_minute、seller_percent、no_need_login"},
-		},
-		Required: []string{"action"},
-		Caps:     []string{"api_invoke"},
-		// 订单端点一律以 order_id 为主键（/plugin/order/detail、/deliver、/refund …），
-		// 意图对外沿用通用的 id；不换算的话所有订单操作都打不到目标订单。
-		Compose: invokeRoutes("commerce_order", map[string]string{
-			"list":         "GET /plugin/order/list",
-			"detail":       "GET /plugin/order/detail",
-			"setting_get":  "GET /plugin/order/config",
-			"setting_save": "POST /plugin/order/config",
-			"deliver":      "POST /plugin/order/deliver",
-			"canceled":     "POST /plugin/order/canceled",
-			"finished":     "POST /plugin/order/finished",
-			"refund":       "POST /plugin/order/refund",
-			"refund_apply": "POST /plugin/order/refund/apply",
-			"pay":          "POST /plugin/order/pay",
-			"export":       "POST /plugin/order/export",
-		}, map[string]string{"id": "order_id"}),
-	},
-	{
-		// Risk 取 write 而非 read：本意图除查询外还路由 save/delete/upload 三个写端点。
-		// 声明成 read 会让 MCP 的工具标注与"只读意图"的批量放行口径一起失真
-		// （由 TestActionRisk_AuditAllIntents 拦下）。
-		Name: "commerce_pay", Title: "支付账户与记录", Domain: DomainCommerce, Risk: RiskWrite,
-		Desc:       "收款账户与支付记录。action: list/detail/statistic(查询)/save/delete/upload(写)。",
-		DefaultOff: true,
-		Params: map[string]ParamSpec{
-			"action":    {Type: "string", Desc: "操作", Required: true, Enum: []string{"list", "detail", "save", "delete", "upload", "statistic"}},
-			"id":        {Type: "integer", Desc: "支付记录 ID"},
-			"values":    {Type: "object", Desc: "账户参数"},
-			"file":      {Type: "string", Desc: "证书文件：data URI 或裸 base64"},
-			"file_name": {Type: "string", Desc: "文件名（配合 file）"},
-			"page":      {Type: "integer", Desc: "页码，从 1 开始（列表类 action）", Default: 1},
-			"page_size": {Type: "integer", Desc: "每页条数（列表类 action）", Default: 20},
-		},
-		Required: []string{"action"},
-		Caps:     []string{"api_invoke"},
-		Compose: invokeRoutes("commerce_pay", map[string]string{
-			"list":      "GET /plugin/pay/accounts",
-			"detail":    "GET /plugin/pay/detail",
-			"save":      "POST /plugin/pay/detail",
-			"delete":    "POST /plugin/pay/delete",
-			"upload":    "POST /plugin/pay/upload",
-			"statistic": "GET /plugin/pay/statistic",
-		}),
-	},
-	{
-		Name: "commerce_finance", Title: "财务与佣金提现", Domain: DomainCommerce, Risk: RiskWrite,
-		Desc:       "财务流水、佣金、提现申请与审批。action: finance_list/finance_detail/commission_list/commission_detail/withdraw_list/withdraw_detail/withdraw_apply/withdraw_approval/withdraw_finished。",
-		DefaultOff: true,
-		Params: map[string]ParamSpec{
-			"action": {Type: "string", Desc: "操作", Required: true, Enum: []string{
-				"finance_list", "finance_detail", "commission_list", "commission_detail",
-				"withdraw_list", "withdraw_detail", "withdraw_apply", "withdraw_approval", "withdraw_finished"}},
-			"id":        {Type: "integer", Desc: "记录 ID"},
-			"values":    {Type: "object", Desc: "申请/审批参数"},
-			"page":      {Type: "integer", Desc: "页码，从 1 开始（列表类 action）", Default: 1},
-			"page_size": {Type: "integer", Desc: "每页条数（列表类 action）", Default: 20},
-		},
-		Required: []string{"action"},
-		Caps:     []string{"api_invoke"},
-		Compose: invokeRoutes("commerce_finance", map[string]string{
-			"finance_list":      "GET /plugin/finance/list",
-			"finance_detail":    "GET /plugin/finance/detail",
-			"commission_list":   "GET /plugin/commission/list",
-			"commission_detail": "GET /plugin/commission/detail",
-			"withdraw_list":     "GET /plugin/withdraw/list",
-			"withdraw_detail":   "GET /plugin/withdraw/detail",
-			"withdraw_apply":    "POST /plugin/withdraw/apply",
-			"withdraw_approval": "POST /plugin/withdraw/approval",
-			"withdraw_finished": "POST /plugin/withdraw/finished",
-		}),
-	},
 	// ───────────────────────── 渠道域 ─────────────────────────
 	{
 		Name: "channel_wechat", Title: "公众号运营", Domain: DomainChannel, Risk: RiskWrite,
@@ -1053,11 +892,7 @@ var domainIntentCatalog = append([]*IntentSpec{
 			"helpers":        "GET /design/helpers",
 		}),
 	},
-	// 商城（AnqiShop 合并）新增的四个意图单独成文件：见 catalog_shop.go。
-	// 用 append 拼接而不是另开一个 init()，是为了让「路径在 init 里追加」的顺序
-	// 依赖消失——Go 会先初始化被引用的变量，domainIntentCatalog 必然包含全部商城意图，
-	// 门禁测试（TestDomainIntentExposureIsDeliberate 遍历本切片）因此不会漏看它们。
-}, shopIntentCatalog...)
+}
 
 // gatedDomainIntents 是补齐域中仍保持 DefaultOff 的意图及其理由。
 //
@@ -1071,19 +906,11 @@ var domainIntentCatalog = append([]*IntentSpec{
 var gatedDomainIntents = map[string]string{
 	"contentops_material":  "素材池（待发布内容）的写入与删除，出错要等取稿时才发现内容缺失",
 	"contentops_translate": "批量改写多语言副本，译文未经审校，错误要切语言后用户看到才暴露",
-	"commerce":             "会员/分组/分销商写操作：账号与分销配置误改影响真实用户，交易域未随站点发行",
-	"commerce_order":       "订单状态流转（发货/取消/退款/支付）直接动资金与履约，退款/取消不可回滚",
 	"contentops_collector": "批量采集：按配置持续写库并改采集策略，误配会批量产出垃圾内容",
 	"contentops_import":    "批量导入 + 远程导入 Token 配置，一次失误影响整批文章",
 	"contentops_transfer":  "跨站点数据迁移（主机级），覆盖目标站数据不可回滚",
 	"contentops_imagedeco": "配图/水印：上传字体图片文件并批量改写附件",
-	"commerce_pay":         "收款账户与支付证书，涉及资金凭证",
-	"commerce_finance":     "财务流水与提现审批，直接涉及资金",
-	// 2026-10-25：商城合并带来的新端点，一并按交易域口径默认关闭。
-	"commerce_marketing":   "发券与做活动直接改价格（面额/活动价/门槛），发出去收不回来",
-	"commerce_fulfillment": "运费规则与对外报价：改错即算错运费，报价会真实发给客户",
-	"commerce_review":      "评价审核与增值服务定价，改错要等客户结算时才发现",
-	"seo_merchant":         "Google 商品同步：配置含 client_secret/refresh_token，且会向外推送商品数据", "channel_wechat": "公众号菜单与消息回复会同步到微信侧，对外可见",
+	"channel_wechat": "公众号菜单与消息回复会同步到微信侧，对外可见",
 	"channel_thirdparty": "读写公众号/小程序/Google 授权配置（AppID、Secret）",
 	"channel_sendmail":   "SMTP 配置与测试发信，会真实投递邮件给收件人",
 	"channel_subscriber": "订阅用户群发（send），对外触达真实邮箱",

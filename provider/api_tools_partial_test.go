@@ -23,17 +23,13 @@ func TestInjectPartialUpdateCoversKnownEndpoints(t *testing.T) {
 		"/module/detail",
 		"/setting/nav",
 		"/plugin/tag/detail",
-		"/plugin/user/detail",
 		// 2026-10-29 起 UserGroupRequest 也有 UpdateAll/Partial 开关：
 		// 原来是「拼新对象 Save 全列」，改个名字就会把 Level/Price/Setting 清成零值、
 		// 把 Status（停用）刷回 1。端点是 save-or-create，既有记录必须走 PATCH。
-		"/plugin/user/group/detail",
 		// 2026-10-29 起 CouponRequest 也指针化 + 加了 UpdateAll/Partial：
 		// 原来是逐字段无条件赋值，改个标题就把面额/门槛/有效期清成 0，
 		// 而面额清零的券还挂着已发出的券码（核销按 0 元抵扣，无法从券码侧补回）。
-		"/plugin/coupon/detail",
 		// 活动同理，而且更狠：不传 skus 会走到 `len(skus)==0` 分支删光全部规格。
-		"/plugin/activity/detail",
 		// 2026-10-29 第三批：素材 / 素材分类 / 城市站全部指针化。
 		// 素材原本硬编码 Status=1（永远无法禁用）且 md5 取的是旧内容；
 		// 城市站改个标题就把经纬度/时区/logo/正文清空，还会用空标题重新生成

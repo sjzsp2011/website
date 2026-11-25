@@ -18,7 +18,6 @@ import { FormattedMessage, history, useIntl } from '@umijs/max';
 import { Button, Modal, Space, message } from 'antd';
 import React, { useEffect, useRef, useState } from 'react';
 import MultiCategory from '../components/multiCategory';
-import { getRuntimeShopMode } from '@/utils/shopMode';
 import '../index.less';
 
 let lastParams: any = {};
@@ -39,13 +38,8 @@ const ArchiveCategory: React.FC = () => {
   const readModules = async () => {
     const res = await getModules();
 
-    // 商城模式产品独立管理，分类页排除产品模块；普通模式保留
     const list = res.data || [];
-    setModules(
-      getRuntimeShopMode()
-        ? list.filter((item: any) => item.id !== 2)
-        : list,
-    );
+    setModules(list);
   };
 
   const onTabChange = (key: string, isSubSite: boolean) => {
@@ -248,8 +242,7 @@ const ArchiveCategory: React.FC = () => {
                 },
               ]
                 .concat(res.data || [])
-                // 仅商城模式排除产品模块
-                .filter((item: any) => !(getRuntimeShopMode() && item.id === 2))
+
                 .map((item: any) => ({
                   label: item.name,
                   value: item.id,
@@ -462,10 +455,8 @@ const ArchiveCategory: React.FC = () => {
           let res = await getCategories(params);
           const list = res.data || [];
           return {
-            // 仅商城模式排除产品分类
-            data: getRuntimeShopMode()
-              ? list.filter((item: any) => item.module_id !== 2)
-              : list,
+
+            data: list,
             total: res.total,
           };
         }}

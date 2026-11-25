@@ -29,9 +29,6 @@ const SettingSystemFrom: React.FC<any> = () => {
   const [extraFields, setExtraFields] = useState<any[]>([]);
   const [activeTabKey, setActiveTabKey] = useState<string>('base');
   const [newKey, setNewKey] = useState<string>('');
-  // 站点模式（0=普通内容模式，1=商城模式）的服务端现值，
-  // 用于切换时的二次确认比对
-  const shopModeRef = useRef<number>(0);
   const intl = useIntl();
 
   const getSetting = async () => {
@@ -41,7 +38,6 @@ const SettingSystemFrom: React.FC<any> = () => {
     setSiteLogo(setting.system?.site_logo || '');
     setSiteClose(setting.system?.site_close || 0);
     setExtraFields(setting.system.extra_fields || []);
-    shopModeRef.current = setting.system?.shop_mode || 0;
     setFetched(true);
     formRef.current?.setFieldsValue(setting.system);
   };
@@ -111,7 +107,6 @@ const SettingSystemFrom: React.FC<any> = () => {
     saveSettingSystem(allValues)
       .then(async (res) => {
         message.success(res.msg);
-        shopModeRef.current = allValues.shop_mode || 0;
         const system = await initialState?.fetchSystemSetting?.();
         if (system) {
           await setInitialState((s) => ({
@@ -137,23 +132,6 @@ const SettingSystemFrom: React.FC<any> = () => {
     };
     allValues.site_logo = siteLogo;
     allValues.extra_fields = extraFields;
-    // 站点模式切换影响面大（菜单与前台商城接口整体启停），需要二次确认
-    if ((allValues.shop_mode || 0) !== shopModeRef.current) {
-      Modal.confirm({
-        title: intl.formatMessage({ id: 'setting.system.shop-mode.confirm' }),
-        content: intl.formatMessage({
-          id: 'setting.system.shop-mode.confirm-content',
-        }),
-        okText: intl.formatMessage({ id: 'setting.system.shop-mode.confirm-ok' }),
-        cancelText: intl.formatMessage({
-          id: 'setting.system.shop-mode.confirm-cancel',
-        }),
-        onOk: () => {
-          return doSubmit(allValues);
-        },
-      });
-      return;
-    }
     return doSubmit(allValues);
   };
 
@@ -458,29 +436,6 @@ const SettingSystemFrom: React.FC<any> = () => {
               value: 1,
               label: intl.formatMessage({
                 id: 'setting.system.ban-spider',
-              }),
-            },
-          ]}
-        />
-        <ProFormRadio.Group
-          name="shop_mode"
-          label={intl.formatMessage({
-            id: 'setting.system.shop-mode',
-          })}
-          extra={intl.formatMessage({
-            id: 'setting.system.shop-mode-description',
-          })}
-          options={[
-            {
-              value: 0,
-              label: intl.formatMessage({
-                id: 'setting.system.shop-mode.normal',
-              }),
-            },
-            {
-              value: 1,
-              label: intl.formatMessage({
-                id: 'setting.system.shop-mode.shop',
               }),
             },
           ]}

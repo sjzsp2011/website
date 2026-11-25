@@ -521,8 +521,6 @@ func TestDomainIntentDefaultExposure(t *testing.T) {
 		"contentops_import":    "批量导入与导入 Token 配置",
 		"contentops_transfer":  "跨站点迁移不可回滚",
 		"contentops_imagedeco": "上传文件并批量改写附件",
-		"commerce_pay":         "资金凭证",
-		"commerce_finance":     "提现审批",
 		"channel_wechat":       "对外同步到微信侧",
 		"channel_thirdparty":   "授权 AppID/Secret",
 		"channel_sendmail":     "真实投递邮件",
@@ -540,14 +538,8 @@ func TestDomainIntentDefaultExposure(t *testing.T) {
 		// 误操作要到「取稿时」「切语言后」才暴露，事后难追溯。
 		"contentops_material":  "素材池写入与删除，出错要等取稿时才发现",
 		"contentops_translate": "批量改写多语言副本，译文未经审校",
-		"commerce":             "会员/分组/分销商写操作影响真实用户",
-		"commerce_order":       "订单状态流转直接动资金，退款/取消不可回滚",
 		// 2026-10-25：商城合并新增端点对应的四个意图，按交易域口径一并默认关闭。
 		// 这份名单与 intent 包的 gatedDomainIntents 并行维护，改一处必须改两处。
-		"commerce_marketing":   "发券与活动直接改价格，券发出去收不回来",
-		"commerce_fulfillment": "运费规则与对外报价，改错即算错运费、报价会真实发出",
-		"commerce_review":      "评价审核与增值服务定价",
-		"seo_merchant":         "Google 商品同步：含 client_secret/refresh_token，且向外推送商品数据",
 		// 注：skill 曾以「涉及文件系统」列在此处，2026-10-07 移出并改为默认开放——
 		// 该理由不成立，它的 delete 已被审批门 + 端点字符白名单 + 只删 skills/<name> 覆盖。
 		// 改默认策略时必须同时改intent 包的 openNonDomainIntents 与这里。

@@ -147,9 +147,6 @@ var capEndpoints = map[string]capEndpoint{
 	// ── 商务：用户 / 订单 ──
 	"user_list":   {Method: "GET", Path: "/plugin/user/list", Rename: map[string]string{"page": "current", "page_size": "pageSize"}},
 	"user_get":    {Method: "GET", Path: "/plugin/user/detail"},
-	"user_create": {Method: "POST", Path: "/plugin/user/detail"},
-	"user_update": {Method: "POST", Path: "/plugin/user/detail"},
-	"user_delete": {Method: "POST", Path: "/plugin/user/delete"},
 	"order_list":  {Method: "GET", Path: "/plugin/order/list", Rename: map[string]string{"page": "current", "page_size": "pageSize"}},
 
 	// ── 系统：设置分区（system_setting 意图按 section 选取）──

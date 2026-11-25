@@ -5,6 +5,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,9 @@ func (ms *MailService) init() {
 	var plans []model.MailPlan
 	ms.w.DB.Where("status IN (0,3)").Find(&plans)
 	for _, plan := range plans {
+		if strings.HasPrefix(plan.Identifier, "order_review_") || strings.HasPrefix(plan.Identifier, "recover_abandoned_checkout_") {
+			continue
+		}
 		ms.Add(&plan)
 	}
 	for {

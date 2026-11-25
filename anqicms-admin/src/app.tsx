@@ -20,25 +20,8 @@ import {
   removeStore,
   setStore,
 } from './utils/store';
-import {
-  isShopMenuPath,
-  isShopMode,
-  setRuntimeShopMode,
-} from './utils/shopMode';
 
 const loginPath = '/login';
-
-/**
- * 站点模式外观标记：global.less 用 body[data-shop-mode='1'] 区分后台配色。
- * 普通内容模式（shop_mode=0）顶栏/侧栏为白色，商城模式（1）为深色，便于区分。
- * 写 body 属性而不是类名，避免和其它全局 class 冲突；
- * 同时把结果缓存到 utils/shopMode，供类组件（archive/detail）同步读取。
- */
-const applyShopModeTheme = (system?: { shop_mode?: number }) => {
-  const shopMode = setRuntimeShopMode(system);
-  if (typeof document === 'undefined') return;
-  document.body.dataset.shopMode = shopMode ? '1' : '0';
-};
 
 /**
  * @see  https://umijs.org/zh-CN/plugins/plugin-initial-state
@@ -88,9 +71,6 @@ export async function getInitialState(): Promise<{
     const system = await fetchSystemSetting();
     const anqiUser = await fetchAnqiUser();
 
-    // 首屏渲染前就打好模式标记，商城模式不会出现「先白后深」的闪烁
-    applyShopModeTheme(system);
-
     return {
       fetchSystemSetting,
       fetchUserInfo,
@@ -111,10 +91,6 @@ export async function getInitialState(): Promise<{
 
 // ProLayout 支持的api https://procomponents.ant.design/components/layout
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
-  // 登录后 initialState 会重新赋值（setInitialState），这里再做一次幂等同步，
-  // 保证切换站点模式后不必手动刷新页面也能拿到正确的配色标记。
-  applyShopModeTheme(initialState?.system);
-
   return {
     breadcrumbRender: false,
     rightContentRender: () => <RightContent />,
@@ -175,27 +151,6 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
         }
       }
 
-      // 站点模式过滤（合并计划阶段 5.2）：
-      // 普通内容模式（shop_mode !== 1）下隐藏商城相关的菜单组与入口。
-      // 商城组隐藏后其子菜单随之隐藏；共享组内的商城子页按路径隐藏。
-      // 清单在 src/utils/shopMode.ts，顶部导航 headerContent 共用同一份。
-      if (!isShopMode(initialState?.system)) {
-        for (let i in menuData) {
-          const item = menuData[i];
-          if (isShopMenuPath(item.path, true)) {
-            item.unaccessible = true;
-            continue;
-          }
-          if (item.children) {
-            for (let j in item.children) {
-              const child = item.children[Number(j)];
-              if (isShopMenuPath(child.path)) {
-                child.unaccessible = true;
-              }
-            }
-          }
-        }
-      }
 
       return menuData;
     },
