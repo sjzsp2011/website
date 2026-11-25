@@ -1,0 +1,511 @@
+package controller
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/go-pay/gopay"
+	"github.com/go-pay/gopay/alipay"
+	"github.com/go-pay/gopay/paypal"
+	"github.com/go-pay/gopay/wechat"
+	"github.com/go-pay/xlog"
+	"github.com/kataras/iris/v12"
+	"github.com/medivhzhan/weapp/v3/server"
+	"github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82/webhook"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider"
+)
+
+func NotifyWeappMsg(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	srv, err := server.NewServer(currentSite.PluginWeapp.AppID, currentSite.PluginWeapp.Token, currentSite.PluginWeapp.EncodingAESKey, "", "", true, nil)
+	if err != nil {
+		log.Printf("init server error: %s", err)
+	}
+
+	srv.OnSubscribeMsgPopup(func(popupEvent *server.SubscribeMsgPopupEvent) {
+		SubscribeMsgPopup(ctx, popupEvent)
+	})
+	srv.OnSubscribeMsgChange(func(popupEvent *server.SubscribeMsgChangeEvent) {
+		SubscribeMsgChange(ctx, popupEvent)
+	})
+
+	err = srv.Serve(ctx.ResponseWriter(), ctx.Request())
+	if err != nil {
+		log.Printf("serving error: %s", err)
+	}
+}
+
+// NotifyWechatPay 公众号和小程序共用支付回调通知
+func NotifyWechatPay(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	body, err := ctx.GetBody()
+	library.DebugLog(currentSite.CachePath, "wechat.log", string(body))
+	notifyReq, err := wechat.ParseNotifyToBodyMap(ctx.Request())
+	rsp := new(wechat.NotifyResponse) // 回复微信的数据
+
+	//检查payment订单
+	payment, err := currentSite.GetPaymentInfoByPaymentId(notifyReq.GetString("out_trade_no"))
+	if err != nil {
+		library.DebugLog(currentSite.CachePath, "wechat.log", "err", "payment-not found")
+		rsp.ReturnCode = gopay.FAIL
+		rsp.ReturnMsg = ctx.Tr("PaymentFailed")
+		ctx.WriteString(rsp.ToXmlString())
+		return
+	}
+	account, err := currentSite.GetPaymentAccountById(payment.PaymentAccountId)
+	if err != nil {
+		library.DebugLog(currentSite.CachePath, "wechat.log", "err", "account-not found")
+		rsp.ReturnCode = gopay.FAIL
+		rsp.ReturnMsg = ctx.Tr("PaymentFailed")
+		ctx.WriteString(rsp.ToXmlString())
+		return
+	}
+
+	ok, err := wechat.VerifySign(account.PayConfig.AppId, wechat.SignType_MD5, notifyReq)
+	if !ok {
+		library.DebugLog(currentSite.CachePath, "wechat.log", "err", err, fmt.Sprintf("%#v", notifyReq))
+		rsp.ReturnCode = gopay.FAIL
+		rsp.ReturnMsg = ctx.Tr("PaymentFailed")
+		ctx.WriteString(rsp.ToXmlString())
+		return
+	}
+	if payment.PaidTime > 0 {
+		library.DebugLog(currentSite.CachePath, "wechat.log", "err", "already-paid")
+		rsp.ReturnCode = gopay.SUCCESS
+		rsp.ReturnMsg = gopay.OK
+		ctx.WriteString(rsp.ToXmlString())
+		return
+	}
+	order, err := currentSite.GetOrderInfoByOrderId(payment.OrderId)
+	if err != nil {
+		library.DebugLog(currentSite.CachePath, "wechat.log", "err", "order not found")
+		rsp.ReturnCode = gopay.FAIL
+		rsp.ReturnMsg = ctx.Tr("PaymentFailed")
+		ctx.WriteString(rsp.ToXmlString())
+		return
+	}
+	if order.PaidTime > 0 {
+		library.DebugLog(currentSite.CachePath, "wechat.log", "err", "order need refund")
+		// todo 已支付了，这个payment需要退款
+		rsp.ReturnCode = gopay.SUCCESS
+		rsp.ReturnMsg = gopay.OK
+		ctx.WriteString(rsp.ToXmlString())
+		return
+	}
+
+	refundId := notifyReq.GetString("refund_id")
+
+	if refundId != "" {
+		// this is a refund order
+		refund, err := currentSite.GetOrderRefundByOrderId(order.OrderId)
+		if err == nil {
+			if notifyReq.GetString("refund_status") == "SUCCESS" {
+				//退款成功
+				refund.Status = config.OrderRefundStatusDone
+			} else {
+				refund.Status = config.OrderRefundStatusFailed
+			}
+			refund.Remark = notifyReq.GetString("refund_status")
+			parsedTime, err := time.ParseInLocation("2006-01-02 15:04:05", notifyReq.GetString("success_time"), time.Local)
+			if err != nil {
+				parsedTime = time.Now()
+			}
+			refund.RefundTime = parsedTime.Unix()
+
+			_ = currentSite.SuccessRefundOrder(refund, order)
+		}
+	} else {
+		// this is a pay order
+		payment.PayWay = "wechat"
+		payment.TerraceId = notifyReq.GetString("transaction_id")
+		payment.PaidTime = time.Now().Unix()
+		payment.BuyerId = notifyReq.GetString("openid")
+		currentSite.DB.Save(payment)
+		order.PaymentId = payment.PaymentId
+		currentSite.DB.Save(order)
+
+		//生成用户支付记录
+		var userBalance int64
+		err = currentSite.DB.Model(&model.User{}).Where("`id` = ?", payment.UserId).Pluck("balance", &userBalance).Error
+		//状态更改了，增加一条记录到用户
+		finance := model.Finance{
+			UserId:      payment.UserId,
+			Direction:   config.FinanceOutput,
+			Amount:      payment.Amount,
+			AfterAmount: userBalance,
+			Action:      config.FinanceActionBuy,
+			OrderId:     payment.OrderId,
+			Status:      1,
+		}
+		err = currentSite.DB.Create(&finance).Error
+		if err != nil {
+			library.DebugLog(currentSite.CachePath, "wechat.log", "err", "order pay failed")
+			rsp.ReturnCode = gopay.FAIL
+			rsp.ReturnMsg = ctx.Tr("PaymentFailed")
+			ctx.WriteString(rsp.ToXmlString())
+			return
+		}
+
+		//支付成功逻辑处理
+		err = currentSite.SuccessPaidOrder(order, payment)
+		if err != nil {
+			library.DebugLog(currentSite.CachePath, "wechat.log", "err", "order pay failed")
+			rsp.ReturnCode = gopay.FAIL
+			rsp.ReturnMsg = ctx.Tr("PaymentFailed")
+			ctx.WriteString(rsp.ToXmlString())
+			return
+		}
+	}
+
+	//通知成功
+	rsp.ReturnCode = gopay.SUCCESS
+	rsp.ReturnMsg = gopay.OK
+	ctx.WriteString(rsp.ToXmlString())
+	return
+}
+
+func NotifyAlipay(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	if err := ctx.Request().ParseForm(); err != nil {
+		return
+	}
+	var form map[string][]string = ctx.Request().Form
+	library.DebugLog(currentSite.CachePath, "alipay.log", form)
+	bm := make(gopay.BodyMap, len(form)+1)
+	for k, v := range form {
+		if len(v) == 1 {
+			bm.Set(k, v[0])
+		}
+	}
+	//检查payment订单
+	payment, err := currentSite.GetPaymentInfoByPaymentId(bm.GetString("out_trade_no"))
+	if err != nil {
+		return
+	}
+	if payment.PaidTime > 0 {
+		ctx.WriteString("success")
+		return
+	}
+	account, err := currentSite.GetPaymentAccountById(payment.PaymentAccountId)
+	if err != nil {
+		library.DebugLog(currentSite.CachePath, "alipay.log", "account-notfound", err)
+		ctx.WriteString("fail")
+		return
+	}
+	file, err := os.Open(currentSite.DataPath + "cert/" + account.PayConfig.PublicCertPath)
+	if err != nil {
+		return
+	}
+	fileContent, err := io.ReadAll(file)
+
+	ok, err := alipay.VerifySign(string(fileContent), bm)
+	if ok == false || err != nil {
+		library.DebugLog(currentSite.CachePath, "alipay.log", err)
+		ctx.WriteString("fail")
+		return
+	}
+
+	order, err := currentSite.GetOrderInfoByOrderId(payment.OrderId)
+	if err != nil {
+		//ctx.WriteString(bm.NotOK("支付失败"))
+		return
+	}
+	if order.PaidTime > 0 {
+		// todo 已支付了，这个payment需要退款
+
+		ctx.WriteString("success")
+		return
+	}
+	refundId := bm.GetString("refund_id")
+	if refundId != "" {
+		// this is a refund order
+		refund, err := currentSite.GetOrderRefundByOrderId(order.OrderId)
+		if err == nil {
+			if bm.GetString("refund_status") == "SUCCESS" {
+				//退款成功
+				refund.Status = config.OrderRefundStatusDone
+			} else {
+				refund.Status = config.OrderRefundStatusFailed
+			}
+			refund.Remark = bm.GetString("refund_status")
+			parsedTime, err := time.ParseInLocation("2006-01-02 15:04:05", bm.GetString("success_time"), time.Local)
+			if err != nil {
+				parsedTime = time.Now()
+			}
+			refund.RefundTime = parsedTime.Unix()
+
+			_ = currentSite.SuccessRefundOrder(refund, order)
+		}
+	} else {
+		// this is a pay order
+		payment.PayWay = "alipay"
+		payment.PaidTime = time.Now().Unix()
+		payment.TerraceId = bm.GetString("trade_no")
+		payment.BuyerId = bm.GetString("buyer_id")
+		if bm.GetString("buyer_open_id") != "" {
+			payment.BuyerId = bm.GetString("buyer_open_id")
+		}
+		payment.BuyerInfo = bm.GetString("buyer_logon_id")
+		currentSite.DB.Save(payment)
+		order.PaymentId = payment.PaymentId
+		currentSite.DB.Save(order)
+		//生成用户支付记录
+		var userBalance int64
+		err = currentSite.DB.Model(&model.User{}).Where("`id` = ?", payment.UserId).Pluck("balance", &userBalance).Error
+		//状态更改了，增加一条记录到用户
+		finance := model.Finance{
+			UserId:      payment.UserId,
+			Direction:   config.FinanceOutput,
+			Amount:      payment.Amount,
+			AfterAmount: userBalance,
+			Action:      config.FinanceActionBuy,
+			OrderId:     payment.OrderId,
+			Status:      1,
+		}
+		err = currentSite.DB.Create(&finance).Error
+		if err != nil {
+			ctx.WriteString("success")
+			return
+		}
+		//支付成功逻辑处理
+		err = currentSite.SuccessPaidOrder(order, payment)
+		if err != nil {
+			ctx.WriteString("success")
+			return
+		}
+	}
+
+	//通知成功
+	ctx.WriteString("success")
+}
+
+func NotifyPayPal(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	terraceId := strings.TrimSpace(ctx.URLParam("token"))
+	if terraceId == "" {
+		ShowMessage(ctx, ctx.Tr("paymentParameterError"), nil)
+		return
+	}
+	body, err := ctx.GetBody()
+	if err != nil {
+		xlog.Errorf("Read body error: %v", err)
+		return
+	}
+	library.DebugLog(currentSite.CachePath, "paypal_notify", string(body))
+	// 处理结果
+	var event paypal.WebhookEvent
+	if err := json.Unmarshal(body, &event); err != nil {
+		xlog.Errorf("JSON unmarshal error: %v", err)
+		ctx.StatusCode(http.StatusBadRequest)
+		ctx.WriteString("Invalid event format")
+		return
+	}
+
+	// 4. 处理事件
+	xlog.Infof("Received %s event: %s", event.EventType, event.Summary)
+	// 获取payment信息
+	var resp provider.PaypalWebhookResource
+	err = json.Unmarshal(event.Resource, &resp)
+	if err != nil {
+		xlog.Errorf("Failed to unmarshal resource: %v, %v", err, string(event.Resource))
+		return
+	}
+	payment, err := currentSite.GetPaymentInfoByTerraceId(resp.Id)
+	if err != nil {
+		xlog.Errorf("Failed to get payment info: %v", err)
+		return
+	}
+	account, err := currentSite.GetPaymentAccountById(payment.PaymentAccountId)
+	if err != nil {
+		library.DebugLog(currentSite.CachePath, "alipay.log", "account-notfound", err)
+		ctx.WriteString("fail")
+		return
+	}
+	client, err := paypal.NewClient(account.PayConfig.AppId, account.PayConfig.AppSecret, account.PayConfig.Sandbox == false)
+	if err != nil {
+		// 处理token获取失败
+		ctx.WriteString("failed")
+		return
+	}
+	bm := make(gopay.BodyMap)
+	bm.Set("auth_algo", ctx.GetHeader("Paypal-Auth-Algo")).
+		Set("cert_url", ctx.GetHeader("Paypal-Cert-Url")).
+		Set("transmission_id", ctx.GetHeader("Paypal-Transmission-Id")).
+		Set("transmission_sig", ctx.GetHeader("Paypal-Transmission-Sig")).
+		Set("transmission_time", ctx.GetHeader("Paypal-Transmission-Time")).
+		Set("webhook_id", account.PayConfig.WebhookId).
+		SetBodyMap("webhook_event", func(b gopay.BodyMap) {
+			err = json.Unmarshal(body, &b)
+			if err != nil {
+				xlog.Errorf("[%+v]: %v, bytes: %s", gopay.UnmarshalErr, err, string(body))
+			}
+		})
+
+	xlog.Debug("bm：", bm.JsonBody())
+	verifyRes, err := client.VerifyWebhookSignature(ctx, bm)
+	if err != nil {
+		xlog.Error(err)
+		return
+	}
+	xlog.Debugf("verifyRes: %+v", verifyRes)
+
+	if verifyRes.VerificationStatus != "SUCCESS" {
+		// 处理验证失败
+		xlog.Error("paypal webhook verify error")
+		return
+	}
+
+	// 使用协程异步处理事件，避免阻塞响应
+	go currentSite.ProcessPaypalEvent(&event)
+
+	ctx.StatusCode(http.StatusOK)
+	ctx.WriteString("Webhook processed")
+}
+
+func NotifyStripe(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	body, err := ctx.GetBody()
+	if err != nil {
+		log.Printf("Error reading body: %v", err)
+		ctx.StatusCode(http.StatusServiceUnavailable)
+		return
+	}
+	library.DebugLog(currentSite.CachePath, "stripe_notify", string(body))
+	// 验证Webhook签名
+	e := stripe.Event{}
+	if err = json.Unmarshal(body, &e); err != nil {
+		log.Printf("Failed to parse webhook body json: %s", err.Error())
+		ctx.StatusCode(http.StatusServiceUnavailable)
+		return
+	}
+	payment, err := currentSite.GetPaymentInfoByPaymentId(e.ID)
+	if err != nil {
+		return
+	}
+	if payment.PaidTime > 0 {
+		ctx.StatusCode(http.StatusOK)
+		return
+	}
+	account, err := currentSite.GetPaymentAccountById(payment.PaymentAccountId)
+	if err != nil {
+		library.DebugLog(currentSite.CachePath, "stripe.log", "account-notfound", err)
+		ctx.WriteString("fail")
+		return
+	}
+
+	endpointSecret := account.PayConfig.WebhookId
+	signatureHeader := ctx.GetHeader("Stripe-Signature")
+
+	event, err := webhook.ConstructEvent(body, signatureHeader, endpointSecret)
+	if err != nil {
+		log.Printf("Webhook signature verification failed: %v", err)
+		ctx.StatusCode(http.StatusBadRequest)
+		return
+	}
+
+	// 处理事件类型
+	switch event.Type {
+	case "payment_intent.succeeded":
+		var pi stripe.PaymentIntent
+		err = json.Unmarshal(event.Data.Raw, &pi)
+		if err != nil {
+			log.Printf("Error parsing payment intent: %v", err)
+			ctx.StatusCode(http.StatusBadRequest)
+			return
+		}
+		//检查payment订单
+		payment, err = currentSite.GetPaymentInfoByPaymentId(pi.ID)
+		if err != nil {
+			return
+		}
+		if payment.PaidTime > 0 {
+			ctx.StatusCode(http.StatusOK)
+			return
+		}
+		order, err := currentSite.GetOrderInfoByOrderId(payment.OrderId)
+		if err != nil {
+			//ctx.WriteString(bm.NotOK("支付失败"))
+			return
+		}
+		if order.PaidTime > 0 {
+			// todo 已支付了，这个payment需要退款
+			ctx.StatusCode(http.StatusOK)
+			return
+		}
+
+		payment.PayWay = config.PayWayStripe
+		err = currentSite.TraceQuery(payment)
+		if err != nil {
+			//ctx.WriteString(bm.NotOK("支付失败"))
+			return
+		}
+	case "payment_intent.payment_failed":
+		var pi stripe.PaymentIntent
+		err = json.Unmarshal(event.Data.Raw, &pi)
+		if err != nil {
+			log.Printf("Error parsing payment intent: %v", err)
+			ctx.StatusCode(http.StatusBadRequest)
+			return
+		}
+		//检查payment订单
+		payment, err = currentSite.GetPaymentInfoByPaymentId(pi.ID)
+		if err != nil {
+			return
+		}
+		order, err := currentSite.GetOrderInfoByOrderId(payment.OrderId)
+		if err == nil {
+			_ = currentSite.SetOrderCanceled(order)
+		}
+
+	default:
+		log.Printf("Unhandled event type: %s", event.Type)
+	}
+
+	ctx.StatusCode(http.StatusOK)
+}
+
+// SubscribeMsgPopup 订阅消息弹框事件
+func SubscribeMsgPopup(ctx iris.Context, popupEvent *server.SubscribeMsgPopupEvent) {
+	currentSite := provider.CurrentSite(ctx)
+	for _, v := range popupEvent.SubscribeMsgPopupEvent {
+		subscribedUser := model.SubscribedUser{
+			Openid:     popupEvent.FromUserName,
+			TemplateId: v.TemplateId,
+		}
+		if v.SubscribeStatusString == server.SubscribeResultAccept {
+			//订阅
+			currentSite.DB.Where("openid = ? AND template_id = ?", subscribedUser.Openid, subscribedUser.TemplateId).FirstOrCreate(&subscribedUser)
+		} else {
+			//拒绝
+			currentSite.DB.Unscoped().Where("openid = ? AND template_id = ?", subscribedUser.Openid, subscribedUser.TemplateId).Delete(model.SubscribedUser{})
+		}
+	}
+}
+
+// SubscribeMsgChange 用户改变订阅消息事件
+func SubscribeMsgChange(ctx iris.Context, popupEvent *server.SubscribeMsgChangeEvent) {
+	currentSite := provider.CurrentSite(ctx)
+	for _, v := range popupEvent.SubscribeMsgChangeEvent {
+		subscribedUser := model.SubscribedUser{
+			Openid:     popupEvent.FromUserName,
+			TemplateId: v.TemplateId,
+		}
+		if v.SubscribeStatusString == server.SubscribeResultAccept {
+			//订阅
+			currentSite.DB.Where("openid = ? AND template_id = ?", subscribedUser.Openid, subscribedUser.TemplateId).FirstOrCreate(&subscribedUser)
+		} else {
+			//拒绝
+			currentSite.DB.Unscoped().Where("openid = ? AND template_id = ?", subscribedUser.Openid, subscribedUser.TemplateId).Delete(model.SubscribedUser{})
+		}
+	}
+}

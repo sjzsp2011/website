@@ -1,0 +1,181 @@
+package model
+
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"hash/crc32"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+)
+
+type User struct {
+	Id            uint   `json:"id" gorm:"column:id;type:int(10) unsigned not null AUTO_INCREMENT;primaryKey"`
+	CreatedTime   int64  `json:"created_time" gorm:"column:created_time;type:bigint(20);autoCreateTime;index:idx_created_time"`
+	UpdatedTime   int64  `json:"updated_time" gorm:"column:updated_time;type:bigint(20);autoUpdateTime;index:idx_updated_time"`
+	ParentId      uint   `json:"parent_id" gorm:"column:parent_id;type:int(10);unsigned;not null;default:0"`
+	UserName      string `json:"user_name" gorm:"column:user_name;type:varchar(64) not null;default:''"`
+	UrlToken      string `json:"url_token" gorm:"column:url_token;type:varchar(190) not null;default:'';index"`
+	RealName      string `json:"real_name" gorm:"column:real_name;type:varchar(64) not null;default:''"`
+	FirstName     string `json:"first_name" gorm:"column:first_name;type:varchar(32) not null;default:''"`
+	LastName      string `json:"last_name" gorm:"column:last_name;type:varchar(32) not null;default:''"`
+	Birthday      int64  `json:"birthday" gorm:"column:birthday;type:bigint(20);default:0"` // 生日
+	AvatarURL     string `json:"avatar_url" gorm:"column:avatar_url;type:varchar(255) not null;default:''"`
+	Introduce     string `json:"introduce" gorm:"column:introduce;type:varchar(1000) not null;default:''"` // 介绍
+	Email         string `json:"email" gorm:"column:email;type:varchar(100) not null;default:'';index:idx_email"`
+	EmailVerified bool   `json:"email_verified" gorm:"column:email_verified;type:tinyint(1) not null;default:0"`
+	Phone         string `json:"phone" gorm:"column:phone;type:varchar(20) not null;default:'';index"`
+	GroupId       uint   `json:"group_id" gorm:"column:group_id;type:int(10) unsigned not null;default:0"`
+	GoogleId      string `json:"google_id" gorm:"column:google_id;type:varchar(255) not null;default:''"`
+	Password      string `json:"-" gorm:"column:password;type:varchar(255) not null;default:''"`
+	ResetPassword bool   `json:"reset_password" gorm:"column:reset_password;type:tinyint(1) not null;default:0"` // 是否需要重置密码，重置密码可以不用旧密码，因为tauth2登录，没有密码
+	Status        int    `json:"status" gorm:"column:status;type:tinyint(1) not null;default:0"`                 // 1 正常，0 待审核，-1 禁止
+	IsRetailer    int    `json:"is_retailer" gorm:"column:is_retailer;type:tinyint(1) not null;default:0"`       // 是否是分销员
+	Balance       int64  `json:"balance" gorm:"column:balance;type:bigint(20) not null;default:0;comment:'用户余额'"`
+	TotalReward   int64  `json:"total_reward" gorm:"column:total_reward;type:bigint(20) not null;default:0;comment:''"` // 分销员累计收益
+	InviteCode    string `json:"invite_code" gorm:"column:invite_code;type:varchar(100) not null;default:'';index:idx_invite_code"`
+	LastLogin     int64  `json:"last_login" gorm:"column:last_login;type:bigint(20);default:0"`
+	ExpireTime    int64  `json:"expire_time" gorm:"column:expire_time;type:bigint(20);default:0"`
+	BrevoId       int64  `json:"brevo_id" gorm:"column:brevo_id;type:bigint(20);defaul:0;index"` // brevo contact's id
+	// 是否订阅
+	Subscribed bool  `json:"subscribed" gorm:"column:subscribed;type:tinyint(1) not null;default:0"`
+	OrderCount int64 `json:"order_count" gorm:"column:order_count;type:bigint(20) not null;default:0"`
+
+	Extra         map[string]*config.CustomField `json:"extra" gorm:"-"`
+	Token         string                         `json:"token" gorm:"-"`
+	Group         *UserGroup                     `json:"group" gorm:"-"`
+	FullAvatarURL string                         `json:"full_avatar_url" gorm:"-"`
+	Link          string                         `json:"link" gorm:"-"`
+}
+
+type UserGroup struct {
+	Id             uint             `json:"id" gorm:"column:id;type:int(10) unsigned not null AUTO_INCREMENT;primaryKey"`
+	CreatedTime    int64            `json:"created_time" gorm:"column:created_time;type:bigint(20);autoCreateTime;index:idx_created_time"`
+	UpdatedTime    int64            `json:"updated_time" gorm:"column:updated_time;type:bigint(20);autoUpdateTime;index:idx_updated_time"`
+	Title          string           `json:"title" gorm:"column:title;type:varchar(32) not null;default:''"`
+	Description    string           `json:"description" gorm:"column:description;type:varchar(1000) not null;default:''"`
+	Level          int              `json:"level" gorm:"column:level;type:int(10) not null;default:0"` // group level
+	Status         int              `json:"status" gorm:"column:status;type:tinyint(1) not null;default:0"`
+	Price          int64            `json:"price" gorm:"column:price;type:bigint(20) not null;default:0"`
+	Setting        UserGroupSetting `json:"setting" gorm:"setting;type:text DEFAULT NULL; COMMENT '配置信息'"` //配置
+	FavorablePrice int64            `json:"favorable_price" gorm:"-"`
+}
+
+type LoginLog struct {
+	Id          uint   `json:"id" gorm:"column:id;type:int(10) unsigned not null AUTO_INCREMENT;primaryKey"`
+	CreatedTime int64  `json:"created_time" gorm:"column:created_time;type:bigint(20);autoCreateTime;index:idx_created_time"`
+	UpdatedTime int64  `json:"updated_time" gorm:"column:updated_time;type:bigint(20);autoUpdateTime;index:idx_updated_time"`
+	UserId      uint   `json:"user_id" gorm:"column:user_id;type:int(10) unsigned not null;default:0;index:idx_user_id"`
+	Ip          string `json:"ip" gorm:"column:ip;type:varchar(32) not null;default:''"`
+	Status      uint   `json:"status" gorm:"column:status;type:tinyint(1) unsigned not null;default:0"` // 0 = false,1=true
+	UserName    string `json:"user_name" gorm:"column:user_name;type:varchar(128) not null;default:''"`
+	Password    string `json:"password" gorm:"column:password;type:varchar(128) not null;default:''"`
+}
+
+type UserGroupSetting struct {
+	//setting
+	ShareReward      int64 `json:"share_reward"`      // 用户分享佣金比例（一级）：建议设置1-20
+	ParentReward     int64 `json:"parent_reward"`     // 邀请奖励比例（二级）：建议设置1-5
+	ShareDiscount    int64 `json:"share_discount"`    // 通过分享链接下单优惠折扣：建议设置90-100
+	Discount         int64 `json:"discount"`          // 用户组购买优惠折扣：建议设置90-100
+	ShippingDiscount int64 `json:"shipping_discount"` // 用户组运费优惠折扣：建议设置90-100
+	ExpireDay        int   `json:"expire_day"`        // 用户组有效天数，365=1年，30=一个月
+
+	ContentNoVerify  bool `json:"content_no_verify"`  // 评论/内容发布是否不需要审核
+	ContentNoCaptcha bool `json:"content_no_captcha"` // 评论/内容发布是否不需要验证码
+}
+
+// Value implements the driver.Valuer interface.
+func (s UserGroupSetting) Value() (driver.Value, error) {
+	return json.Marshal(s)
+}
+
+// Scan implements the sql.Scanner interface.
+func (s *UserGroupSetting) Scan(src interface{}) error {
+	switch src := src.(type) {
+	case []byte:
+		return json.Unmarshal(src, &s)
+	case string:
+		return json.Unmarshal([]byte(src), &s)
+	case nil:
+		*s = UserGroupSetting{}
+		return nil
+	}
+
+	return fmt.Errorf("pq: cannot convert %T", src)
+}
+
+func (u *User) BeforeCreate(tx *gorm.DB) (err error) {
+	if u.UrlToken == "" {
+		u.UrlToken = library.GetPinyin(u.UserName, false)
+	}
+
+	return
+}
+
+func (u *User) AfterCreate(tx *gorm.DB) (err error) {
+	if u.InviteCode == "" {
+		id := crc32.ChecksumIEEE([]byte(strconv.Itoa(int(u.Id))))
+		result := library.DecimalToAny(int64(id), 36)
+		u.InviteCode = result
+		tx.Save(u)
+	}
+
+	return
+}
+
+func (u *User) GetThumb(storageUrl string) string {
+	u.FullAvatarURL = u.AvatarURL
+	//取第一张
+	if u.FullAvatarURL != "" {
+		if !strings.HasPrefix(u.FullAvatarURL, "http") && !strings.HasPrefix(u.FullAvatarURL, "//") {
+			u.FullAvatarURL = storageUrl + "/" + strings.TrimPrefix(u.FullAvatarURL, "/")
+		}
+	}
+
+	return u.FullAvatarURL
+}
+
+func (u *User) CheckPassword(password string) bool {
+	if password == "" {
+		return false
+	}
+
+	byteHash := []byte(u.Password)
+	bytePass := []byte(password)
+	err := bcrypt.CompareHashAndPassword(byteHash, bytePass)
+	if err != nil {
+		return false
+	}
+
+	return true
+}
+
+func (u *User) EncryptPassword(password string) error {
+	if password == "" {
+		return errors.New("密码为空")
+	}
+	pass := []byte(password)
+	hash, err := bcrypt.GenerateFromPassword(pass, BcryptCost)
+	if err != nil {
+		return err
+	}
+
+	u.Password = string(hash)
+
+	return nil
+}
+
+func (u *User) LogLogin(tx *gorm.DB) error {
+	u.LastLogin = time.Now().Unix()
+	tx.Model(u).UpdateColumn("last_login", u.LastLogin)
+
+	return nil
+}

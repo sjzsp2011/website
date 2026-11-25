@@ -1,0 +1,179 @@
+package config
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	mrand "math/rand"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"kandaoni.com/anqicms/library"
+)
+
+type ServerJson struct {
+	Mysql  MysqlConfig  `json:"mysql"`
+	Server ServerConfig `json:"server"`
+
+	Sparks map[string]SparkSetting `json:"sparks"`
+}
+
+type ConfigJson struct {
+	//setting
+	System   SystemConfig   `json:"system"`
+	Content  ContentConfig  `json:"content"`
+	Index    IndexConfig    `json:"index"`
+	Contact  ContactConfig  `json:"contact"`
+	Shipping ShippingConfig `json:"shipping"`
+	Safe     SafeConfig     `json:"safe"`
+	//plugin
+	PluginPush        PluginPushConfig      `json:"plugin_push"`
+	PluginSitemap     PluginSitemapConfig   `json:"plugin_sitemap"`
+	PluginRewrite     PluginRewriteConfig   `json:"plugin_rewrite"`
+	PluginAnchor      PluginAnchorConfig    `json:"plugin_anchor"`
+	PluginGuestbook   PluginGuestbookConfig `json:"plugin_guestbook"`
+	PluginUploadFiles []PluginUploadFile    `json:"plugin_upload_file"`
+	PluginSendmail    PluginSendmail        `json:"plugin_sendmail"`
+	PluginImportApi   PluginImportApiConfig `json:"plugin_import_api"`
+	PluginStorage     PluginStorageConfig   `json:"plugin_storage"`
+	PluginWeapp       PluginWeappConfig     `json:"plugin_weapp"`
+	PluginWechat      PluginWeappConfig     `json:"plugin_wechat"`
+	PluginRetailer    PluginRetailerConfig  `json:"plugin_retailer"`
+	PluginUser        PluginUserConfig      `json:"plugin_user"`
+	PluginOrder       PluginOrderConfig     `json:"plugin_order"`
+	PluginFulltext    PluginFulltextConfig  `json:"plugin_fulltext"`
+}
+
+func initPath() {
+	sep := string(os.PathSeparator)
+	ExecPath, _ = os.Executable()
+	baseName := filepath.Base(ExecPath)
+	ExecPath = filepath.Dir(ExecPath)
+	if strings.Contains(baseName, "go_build") || strings.Contains(ExecPath, "go-build") || strings.Contains(baseName, "Test") {
+		ExecPath, _ = os.Getwd()
+	}
+	if strings.Contains(baseName, "Test") || strings.Contains(ExecPath, "/test") || strings.Contains(ExecPath, "/provider") {
+		ExecPath = filepath.Dir(ExecPath)
+	}
+	length := utf8.RuneCountInString(ExecPath)
+	lastChar := ExecPath[length-1:]
+	if lastChar != sep {
+		ExecPath = ExecPath + sep
+	}
+
+	log.Println(ExecPath)
+}
+
+func initJSON() {
+	rawConfig, err := os.ReadFile(ExecPath + "config.json")
+	if err != nil {
+		//未初始化
+		Server.Server.Env = "production"
+		Server.Server.Port = 8001
+		Server.Server.LogLevel = "error"
+	} else {
+		if err = json.Unmarshal(rawConfig, &Server); err != nil {
+			fmt.Println("Invalid Config: ", err.Error())
+			logFile, err := os.OpenFile(ExecPath+"error.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0766)
+			if nil == err {
+				logFile.WriteString(fmt.Sprintln(time.Now().Format("2006-01-02 15:04:05"), "Invalid Config", err.Error()))
+				defer logFile.Close()
+			}
+			os.Exit(-1)
+		}
+	}
+}
+
+var ExecPath string
+var Server ServerJson
+var AnqiUser AnqiUserConfig
+
+var GoogleValid bool // can visit google or not
+
+type RestartConfig struct {
+	Code   int
+	SiteId uint
+}
+
+// RestartChan 1 to restart app, 0 to reload template, 2 to exit app
+var RestartChan = make(chan RestartConfig)
+
+func init() {
+	initPath()
+	initJSON()
+}
+
+func WriteConfig() error {
+	//将现有配置写回文件
+	configFile, err := os.OpenFile(ExecPath+"config.json", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+
+	defer configFile.Close()
+
+	buff := &bytes.Buffer{}
+
+	buf, err := json.MarshalIndent(Server, "", "\t")
+	if err != nil {
+		return err
+	}
+	buff.Write(buf)
+
+	_, err = io.Copy(configFile, buff)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GenerateRandString 生成随机字符串
+func GenerateRandString(length int) string {
+	const charSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	var output strings.Builder
+	output.Grow(length)
+
+	buf := make([]byte, length)
+	if _, err := rand.Read(buf); err != nil {
+		// fallback: 用当前时间作为种子
+		rd := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+		for i := 0; i < length; i++ {
+			output.WriteByte(charSet[rd.Intn(len(charSet))])
+		}
+	} else {
+		for i := 0; i < length; i++ {
+			output.WriteByte(charSet[int(buf[i])%len(charSet)])
+		}
+	}
+
+	return output.String()
+}
+
+func LoadLocales() (languages []string) {
+	// 读取language列表
+	readerInfos, err := os.ReadDir(ExecPath + "locales")
+	var added = map[string]struct{}{}
+	if err == nil {
+		for _, info := range readerInfos {
+			if info.IsDir() {
+				added[info.Name()] = struct{}{}
+				languages = append(languages, info.Name())
+			}
+		}
+	}
+	// 增加所有支持的语言
+	for _, lang := range library.Languages {
+		if _, ok := added[lang.Code]; !ok {
+			languages = append(languages, lang.Code)
+		}
+	}
+
+	return languages
+}

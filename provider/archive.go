@@ -1,0 +1,3694 @@
+package provider
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"log/slog"
+	"math"
+	"math/rand"
+	"mime/multipart"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jinzhu/now"
+	"github.com/xuri/excelize/v2"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"gopkg.in/yaml.v3"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider/fulltext"
+	"kandaoni.com/anqicms/request"
+	"kandaoni.com/anqicms/response"
+)
+
+func (w *Website) GetArchiveByIdFromCache(id int64) (archive *model.Archive) {
+	cacheKey := "archive-" + strconv.FormatInt(id, 10)
+	err := w.Cache.Get(cacheKey, archive)
+	if err != nil {
+		archive, err = w.GetArchiveById(id)
+		if err != nil {
+			return nil
+		}
+		_ = w.Cache.Set(cacheKey, archive, 300)
+	}
+
+	return archive
+}
+
+func (w *Website) GetArchiveByUrlTokenFromCache(urlToken string) (archive *model.Archive) {
+	cacheKey := "archive-" + urlToken
+	err := w.Cache.Get(cacheKey, archive)
+	if err != nil {
+		archive, err = w.GetArchiveByUrlToken(urlToken)
+		if err != nil {
+			return nil
+		}
+		_ = w.Cache.Set(cacheKey, archive, 300)
+	}
+
+	return archive
+}
+
+func (w *Website) DeleteArchiveCache(id int64, urlToken string, link string) {
+	w.Cache.Delete("archive-" + strconv.FormatInt(id, 10))
+	w.Cache.Delete("archive-" + urlToken)
+	// 同时清理html缓存，如果可以的话
+	if link != "" && w.PluginHtmlCache.Open != false {
+		frontUrl := w.System.BaseUrl
+		if w.System.FrontUrl != "" {
+			frontUrl = w.System.FrontUrl
+		}
+		cachePath := w.CachePath + "pc"
+		localPath := transToLocalPath(strings.TrimPrefix(link, frontUrl), "")
+		cacheFile := cachePath + localPath
+		_ = os.Remove(cacheFile)
+		memCacheKey := fmt.Sprintf("html-%v-%s", false, localPath)
+		w.Cache.Delete(memCacheKey)
+	}
+	// 如果开启了多语言，还需要删除多语言缓存
+	w.DeleteMultiLangCache([]string{link})
+}
+
+func (w *Website) GetArchiveById(id int64) (*model.Archive, error) {
+	return w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`id` = ?", id)
+	})
+}
+
+func (w *Website) GetArchiveByTitle(title string) (*model.Archive, error) {
+	return w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`title` = ?", title)
+	})
+}
+
+func (w *Website) GetArchiveByFixedLink(link string) (*model.Archive, error) {
+	return w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`fixed_link` = ?", link)
+	})
+}
+
+func (w *Website) GetArchiveByUrlToken(urlToken string) (*model.Archive, error) {
+	if urlToken == "" {
+		return nil, errors.New("empty token")
+	}
+	return w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`url_token` = ?", urlToken)
+	})
+}
+
+func (w *Website) GetArchiveByOriginUrl(keyword string) (*model.Archive, error) {
+	return w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`origin_url` = ?", keyword).Order("id desc")
+	})
+}
+
+func (w *Website) GetPreviousArchive(categoryId, id int64) (*model.Archive, error) {
+	sql := w.DB.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		if categoryId > 0 {
+			tx = tx.Where("`category_id` = ?", categoryId)
+		}
+		return tx.Where("`id` < ?", id).Order("`id` DESC").Select("id").Limit(1).Find(&model.Archive{})
+	})
+	var archiveId int64
+	err := w.DB.Raw(sql).Take(&archiveId).Error
+	if archiveId == 0 {
+		return nil, err
+	}
+	archive, err := w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`id` = ?", archiveId)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if archive.Password != "" {
+		archive.HasPassword = true
+		archive.Password = ""
+	}
+	return archive, nil
+}
+
+func (w *Website) GetNextArchive(categoryId, id int64) (*model.Archive, error) {
+	sql := w.DB.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		if categoryId > 0 {
+			tx = tx.Where("`category_id` = ?", categoryId)
+		}
+		return tx.Where("`id` > ?", id).Order("`id` ASC").Select("id").Limit(1).Find(&model.Archive{})
+	})
+	var archiveId int64
+	err := w.DB.Raw(sql).Take(&archiveId).Error
+	if archiveId == 0 {
+		return nil, err
+	}
+	archive, err := w.GetArchiveByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`id` = ?", archiveId)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if archive.Password != "" {
+		archive.HasPassword = true
+		archive.Password = ""
+	}
+	return archive, nil
+}
+
+func (w *Website) GetArchiveByFunc(ops func(tx *gorm.DB) *gorm.DB) (*model.Archive, error) {
+	// 参数化取 id：用 DryRun 拿到带 ? 的 SQL 和 Vars，再绑定执行，
+	// 不再像 ToSQL 那样把 Vars 内联成字面量（issue #93 反斜杠+引号注入）。
+	sql, vars := w.dryRunSQL(func(tx *gorm.DB) *gorm.DB {
+		return ops(tx.WithContext(w.Ctx())).Select("id").Limit(1).Find(&model.Archive{})
+	})
+	var archiveId int64
+	err := w.DB.Raw(sql, vars...).Take(&archiveId).Error
+	if archiveId == 0 {
+		return nil, err
+	}
+
+	var archive model.Archive
+	err = w.DB.Model(&model.Archive{}).Where("id = ?", archiveId).Take(&archive).Error
+	if err != nil {
+		return nil, err
+	}
+	archive.GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(archive.Id)))
+	archive.Link = w.GetUrl("archive", &archive, 0)
+	return &archive, nil
+}
+
+func (w *Website) GetArchiveDraftById(id int64) (*model.ArchiveDraft, error) {
+	return w.GetArchiveDraftByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`id` = ?", id)
+	})
+}
+
+func (w *Website) GetArchiveDraftByTitle(title string) (*model.ArchiveDraft, error) {
+	return w.GetArchiveDraftByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`title` = ?", title)
+	})
+}
+
+func (w *Website) GetArchiveDraftByFixedLink(link string) (*model.ArchiveDraft, error) {
+	return w.GetArchiveDraftByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`fixed_link` = ?", link)
+	})
+}
+
+func (w *Website) GetArchiveDraftByUrlToken(urlToken string) (*model.ArchiveDraft, error) {
+	if urlToken == "" {
+		return nil, errors.New("empty token")
+	}
+	return w.GetArchiveDraftByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`url_token` = ?", urlToken)
+	})
+}
+
+func (w *Website) GetArchiveDraftByOriginUrl(keyword string) (*model.ArchiveDraft, error) {
+	return w.GetArchiveDraftByFunc(func(tx *gorm.DB) *gorm.DB {
+		return tx.Where("`origin_url` = ?", keyword).Order("id desc")
+	})
+}
+
+func (w *Website) GetArchiveDraftByFunc(ops func(tx *gorm.DB) *gorm.DB) (*model.ArchiveDraft, error) {
+	var archive model.ArchiveDraft
+	err := ops(w.DB).Take(&archive).Error
+	if err != nil {
+		return nil, err
+	}
+	archive.GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(archive.Id)))
+	archive.Link = w.GetUrl("archive", &archive, 0)
+	return &archive, nil
+}
+func (w *Website) GetArchiveDataById(id int64) (*model.ArchiveData, error) {
+	var data model.ArchiveData
+	err := w.DB.WithContext(w.Ctx()).Where("`id` = ?", id).First(&data).Error
+	if err != nil {
+		return nil, err
+	}
+	// 对内容进行处理
+	data.Content = w.ReplaceContentUrl(data.Content, true)
+
+	return &data, nil
+}
+
+// dryRunSQL 用 DryRun 求出「参数化 SQL + Vars」：stmt.SQL.String() 保留 ?
+// 占位符，stmt.Vars 保留绑定值。绝不使用 ToSQL——它内部调用 Dialector.Explain
+// 把 Vars 内联成字面量，反斜杠 + 引号可击穿字符串字面量造成 SQL 注入（issue #93）。
+// 任何后续要交给 Raw/EXPLAIN 执行的查询，都必须经由这里而不是 ToSQL。
+func (w *Website) dryRunSQL(build func(tx *gorm.DB) *gorm.DB) (string, []interface{}) {
+	tx := build(w.DB.Session(&gorm.Session{DryRun: true, SkipDefaultTransaction: true}))
+	return tx.Statement.SQL.String(), tx.Statement.Vars
+}
+
+func (w *Website) GetArchiveList(ops func(tx *gorm.DB) *gorm.DB, order string, currentPage, pageSize int, offsets ...int) ([]*model.Archive, int64, error) {
+	var archives []*model.Archive
+
+	offset := 0
+	if currentPage > 0 {
+		offset = (currentPage - 1) * pageSize
+	}
+	var draft = false
+	if len(offsets) > 0 {
+		if offsets[0] > 0 {
+			offset = offsets[0]
+		}
+		if len(offsets) > 1 {
+			draft = offsets[1] == 1
+		}
+	}
+	var total int64
+	// 对于没有分页的list，则缓存
+	var cacheKey = ""
+	if currentPage == 0 && !draft {
+		sql, vars := w.dryRunSQL(func(tx *gorm.DB) *gorm.DB {
+			tx = tx.WithContext(w.Ctx()).Model(&model.Archive{})
+			if ops != nil {
+				tx = ops(tx)
+			}
+			return tx.Order(order).Limit(pageSize).Offset(offset).Find(&[]*model.Archive{})
+		})
+		cacheKey = "archive-list-" + library.Md5(fmt.Sprintf("%s|%#v", sql, vars))[8:24]
+		err := w.Cache.Get(cacheKey, &archives)
+		if err == nil {
+			return archives, int64(len(archives)), nil
+		}
+		if wg, ok := w.Cache.Pending(cacheKey); ok {
+			wg.Wait()
+			err = w.Cache.Get(cacheKey, &archives)
+			if err == nil {
+				return archives, int64(len(archives)), nil
+			}
+		}
+	}
+	var builder *gorm.DB
+	if draft {
+		builder = w.DB.Table("`archive_drafts` as archives").WithContext(w.Ctx())
+	} else {
+		builder = w.DB.Model(&model.Archive{}).WithContext(w.Ctx())
+	}
+
+	if ops != nil {
+		builder = ops(builder)
+	}
+
+	if currentPage > 0 {
+		// 缓存 count。缓存 key 继续用内联 SQL 做 hash（仅参与 Md5、从不执行），
+		// 但真正拿去执行的 EXPLAIN 必须用参数化 SQL + Vars，杜绝注入。
+		sqlCount, countVars := w.dryRunSQL(func(tx *gorm.DB) *gorm.DB {
+			tx = tx.Model(&model.Archive{})
+			if ops != nil {
+				tx = ops(tx)
+			}
+			return tx.Order(order).Find(&[]*model.Archive{})
+		})
+		cacheKeyCount := "archive-list-count" + library.Md5(fmt.Sprintf("%s|%#v", sqlCount, countVars))[8:24]
+		err := w.Cache.Get(cacheKeyCount, &total)
+		if err != nil {
+			// 如果使用explain分析行数大于10万，则不再使用count统计行数
+			total = w.GetExplainCountParams(sqlCount, countVars...)
+			if total < 100000 {
+				builder.Count(&total)
+			}
+			_ = w.Cache.Set(cacheKeyCount, total, 300)
+		}
+		// 分页提速，先查出ID，再查询结果
+		// 先查询ID：直接走参数化链式查询，不再 ToSQL 内联后 Raw 执行
+		var archiveIds []int64
+		if err := builder.Limit(pageSize).Offset(offset).Select("archives.id").Order(order).Pluck("archives.id", &archiveIds).Error; err != nil {
+			return nil, 0, err
+		}
+		if len(archiveIds) > 0 {
+			if draft {
+				w.DB.Table("`archive_drafts` as archives").Where("id IN (?)", archiveIds).Order(order).Find(&archives)
+			} else {
+				w.DB.Model(&model.Archive{}).Where("id IN (?)", archiveIds).Order(order).Find(&archives)
+			}
+		}
+		for i := range archives {
+			archives[i].GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(archives[i].Id)))
+			archives[i].Link = w.GetUrl("archive", archives[i], 0)
+		}
+	} else {
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+		w.Cache.AddPending(cacheKey, wg)
+		if strings.Contains(order, "rand") {
+			// 如果文章总量大于10万，则使用下面的方法处理
+			totalArchive := w.GetExplainCount("SELECT id FROM archives")
+			if totalArchive > 100000 {
+				var minMax struct {
+					MinId int `json:"min_id"`
+					MaxId int `json:"max_id"`
+				}
+				builder.WithContext(context.Background()).Select("MIN(archives.id) as min_id, MAX(archives.id) as max_id").Scan(&minMax)
+				if minMax.MinId == 0 || minMax.MaxId == 0 {
+					return nil, 0, errors.New("empty archive")
+				}
+				var existIds []int64
+				randId := rand.New(rand.NewSource(time.Now().UnixNano()))
+				for i := 0; i < pageSize; i++ {
+					tmpId := randId.Intn(minMax.MaxId-minMax.MinId) + minMax.MinId
+					var findId int64
+					builder.WithContext(context.Background()).Where("archives.id >= ?", tmpId).Select("archives.id").Limit(1).Pluck("id", &findId)
+					if findId > 0 {
+						existIds = append(existIds, findId)
+					}
+				}
+				if len(existIds) > 0 {
+					builder = builder.Where("archives.id IN (?)", existIds)
+				} else {
+					builder = builder.Where("archives.id = 0")
+				}
+			}
+		}
+		// 直接走参数化 Pluck，不再 ToSQL 内联后 Raw 执行
+		var archiveIds []int64
+		if err := builder.Limit(pageSize).Offset(offset).Order(order).Select("archives.id").Pluck("archives.id", &archiveIds).Error; err != nil {
+			w.Cache.DelPending(cacheKey)
+			wg.Done()
+			return nil, 0, err
+		}
+		if len(archiveIds) > 0 {
+			if draft {
+				w.DB.Table("`archive_drafts` as archives").Where("id IN (?)", archiveIds).Order(order).Find(&archives)
+			} else {
+				w.DB.Model(&model.Archive{}).Where("id IN (?)", archiveIds).Order(order).Find(&archives)
+			}
+		}
+		for i := range archives {
+			archives[i].GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(archives[i].Id)))
+			archives[i].Link = w.GetUrl("archive", archives[i], 0)
+		}
+		// 对于没有分页的list，则缓存
+		if !draft {
+			_ = w.Cache.Set(cacheKey, archives, 600)
+		}
+		w.Cache.DelPending(cacheKey)
+		wg.Done()
+	}
+
+	return archives, total, nil
+}
+
+type ExplainCount struct {
+	Rows string
+}
+
+// explainCountSafe 对 EXPLAIN 用的 SQL 做结构校验，挡住明显的多语句/危险操作。
+// 注意：这只是纵深防御，真正的注入防护靠参数化（GetExplainCountParams 的 vars），
+// 绝不能把用户输入内联进 sql 再传进来。
+func explainCountSafe(sql string) bool {
+	trimmed := strings.TrimSpace(sql)
+	if !strings.HasPrefix(strings.ToUpper(trimmed), "SELECT") {
+		return false
+	}
+	upperSql := strings.ToUpper(trimmed)
+	if strings.Contains(upperSql, "INTO OUTFILE") ||
+		strings.Contains(upperSql, "INTO DUMPFILE") ||
+		strings.Contains(upperSql, "INTO @") ||
+		strings.Contains(upperSql, "SYSTEM") ||
+		strings.Contains(upperSql, "SLEEP") ||
+		strings.Contains(upperSql, "BENCHMARK") ||
+		strings.Contains(upperSql, "LOAD_FILE") {
+		return false
+	}
+	return true
+}
+
+// GetExplainCount 估算一条「固定 SQL」（不含用户参数）的行数。
+// 调用方若 SQL 里带外部输入，必须改用 GetExplainCountParams，绝不拼接字符串。
+func (w *Website) GetExplainCount(sql string) int64 {
+	return w.GetExplainCountParams(sql)
+}
+
+// GetExplainCountParams 用参数化方式执行 EXPLAIN，sql 须为带占位符的 SQL，
+// 外部输入一律走 vars 传给驱动，杜绝「反斜杠 + 引号」击穿字符串字面量。
+func (w *Website) GetExplainCountParams(sql string, vars ...interface{}) int64 {
+	var result ExplainCount
+	if !explainCountSafe(sql) {
+		return 0
+	}
+	w.DB.Session(&gorm.Session{PrepareStmt: false}).Raw("EXPLAIN "+sql, vars...).Scan(&result)
+
+	// MySQL EXPLAIN rows may contain extras like "3 (0%)" for partitioned tables;
+	// extract the leading numeric value.
+	rowsStr := strings.TrimSpace(result.Rows)
+	if idx := strings.Index(rowsStr, " "); idx > 0 {
+		rowsStr = rowsStr[:idx]
+	}
+	if n, err := strconv.ParseInt(rowsStr, 10, 64); err == nil {
+		return n
+	}
+	return 0
+}
+
+func (w *Website) GetArchiveExtraFromCache(archiveId int64) (extra map[string]*config.CustomField) {
+	cacheKey := "archive-extra-" + strconv.FormatInt(archiveId, 10)
+	err := w.Cache.Get(cacheKey, &extra)
+	if err != nil {
+		return nil
+	}
+
+	return extra
+}
+
+func (w *Website) AddArchiveExtraCache(archiveId int64, extra map[string]*config.CustomField) {
+	cacheKey := "archive-extra-" + strconv.FormatInt(archiveId, 10)
+	_ = w.Cache.Set(cacheKey, extra, 60)
+}
+
+func (w *Website) DeleteArchiveExtraCache(archiveId int64) {
+	w.Cache.Delete("archive-extra-" + strconv.FormatInt(archiveId, 10))
+}
+
+func (w *Website) GetArchiveExtra(moduleId uint, id int64, loadCache bool) map[string]*config.CustomField {
+	if loadCache {
+		cached := w.GetArchiveExtraFromCache(id)
+		if cached != nil {
+			return cached
+		}
+	}
+	//读取extra
+	result := map[string]interface{}{}
+	extraFields := map[string]*config.CustomField{}
+	module := w.GetModuleFromCache(moduleId)
+	if module != nil {
+		var fields []string
+		for _, v := range module.Fields {
+			fields = append(fields, "`"+v.FieldName+"`")
+		}
+		//从数据库中取出来
+		if len(fields) > 0 {
+			w.DB.WithContext(w.Ctx()).Table(module.TableName).Where("`id` = ?", id).Select(strings.Join(fields, ",")).Scan(&result)
+			//extra的CheckBox的值
+			for _, v := range module.Fields {
+				value, ok := result[v.FieldName].(string)
+				if ok {
+					if v.Type == config.CustomFieldTypeImage || v.Type == config.CustomFieldTypeFile || v.Type == config.CustomFieldTypeEditor {
+						result[v.FieldName] = w.ReplaceContentUrl(value, true)
+					} else if v.Type == config.CustomFieldTypeImages {
+						// json 还原
+						var images []string
+						err := json.Unmarshal([]byte(value), &images)
+						if err == nil {
+							for i := range images {
+								if !strings.HasPrefix(images[i], "http") && !strings.HasPrefix(images[i], "//") {
+									images[i] = w.PluginStorage.StorageUrl + "/" + strings.TrimPrefix(images[i], "/")
+								}
+							}
+							result[v.FieldName] = images
+						}
+					} else if v.Type == config.CustomFieldTypeTexts {
+						var texts []config.CustomFieldTexts
+						err := json.Unmarshal([]byte(value), &texts)
+						if err == nil {
+							result[v.FieldName] = texts
+						}
+					} else if v.Type == config.CustomFieldTypeTimeline {
+						var val config.TimelineField
+						err := json.Unmarshal([]byte(value), &val)
+						if err == nil {
+							result[v.FieldName] = val
+						}
+					} else if v.Type == config.CustomFieldTypeArchive {
+						var arcIds []int64
+						err := json.Unmarshal([]byte(value), &arcIds)
+						if err == nil {
+							result[v.FieldName] = arcIds
+						}
+					} else if v.Type == config.CustomFieldTypeCategory || v.Type == config.CustomFieldTypeNumber {
+						result[v.FieldName], _ = strconv.ParseInt(value, 10, 64)
+					}
+				}
+				extraFields[v.FieldName] = &config.CustomField{
+					Name:        v.Name,
+					Value:       result[v.FieldName],
+					Default:     v.Content,
+					FollowLevel: v.FollowLevel,
+					Type:        v.Type,
+					FieldName:   v.FieldName,
+				}
+			}
+		}
+		if loadCache {
+			w.AddArchiveExtraCache(id, extraFields)
+		}
+	}
+
+	return extraFields
+}
+
+func (w *Website) SaveArchive(req *request.Archive) (*model.Archive, error) {
+	hookCtx := &HookContext{
+		Point: BeforeArchivePost,
+		Site:  w,
+		Data:  req,
+	}
+	if err := TriggerHook(hookCtx); err != nil {
+		return nil, err
+	}
+
+	// 多分类归一：只给 category_id 时等价于「只保留这一个分类」；
+	// nil 保持 nil（= 调用方没提分类，不改），空数组保持空数组（新建时会被下面拦下）。
+	if req.CategoryIds == nil && req.CategoryId > 0 {
+		req.CategoryIds = library.Ptr([]uint{req.CategoryId})
+	}
+	if req.CategoryIds != nil {
+		nonZero := make([]uint, 0, len(*req.CategoryIds))
+		for _, catId := range *req.CategoryIds {
+			if catId > 0 {
+				nonZero = append(nonZero, catId)
+			}
+		}
+		req.CategoryIds = &nonZero
+		for _, catId := range nonZero {
+			category := w.GetCategoryFromCache(catId)
+			if category == nil || category.Type != config.CategoryTypeArchive {
+				return nil, errors.New(w.Tr("PleaseSelectAColumn"))
+			}
+		}
+		if len(nonZero) > 0 {
+			req.CategoryId = nonZero[0]
+		}
+	}
+
+	if req.CategoryId > 0 {
+		category := w.GetCategoryFromCache(req.CategoryId)
+		if category == nil {
+			return nil, errors.New(w.Tr("PleaseSelectAColumn"))
+		}
+		req.ModuleId = category.ModuleId
+	}
+
+	var category *model.Category
+	var module *model.Module
+	var draft *model.ArchiveDraft
+	var err error
+	newPost := false
+	isReleased := false
+	if req.Id > 0 {
+		// 先读草稿
+		draft, err = w.GetArchiveDraftById(req.Id)
+		if err != nil {
+			archive, err := w.GetArchiveById(req.Id)
+			if err != nil {
+				// 表示不存在，则新建一个
+				newPost = true
+				draft = &model.ArchiveDraft{}
+				draft.Id = req.Id
+			} else {
+				draft = &model.ArchiveDraft{
+					Archive: *archive,
+					Status:  config.ContentStatusOK,
+				}
+				isReleased = true
+			}
+		}
+	} else {
+		newPost = true
+		draft = &model.ArchiveDraft{}
+
+		if req.CategoryIds == nil || len(*req.CategoryIds) == 0 {
+			return nil, errors.New(w.Tr("PleaseSelectAColumn"))
+		}
+		category, err = w.GetCategoryById(req.CategoryId)
+		if err != nil {
+			return nil, errors.New(w.Tr("PleaseSelectAColumn"))
+		}
+		module = w.GetModuleFromCache(category.ModuleId)
+		if module == nil {
+			return nil, errors.New(w.Tr("UndefinedModel"))
+		}
+		if len(req.Title) == 0 {
+			return nil, errors.New(w.Tr("PleaseFillInTheArticleTitle"))
+		}
+		req.ModuleId = module.Id
+		req.UrlToken = w.VerifyArchiveUrlToken(req.UrlToken, req.Title, draft.Id)
+	}
+	// createdTime
+	if req.CreatedTime > 0 {
+		draft.CreatedTime = req.CreatedTime
+	}
+	if !req.QuickSave {
+		draft.Status = config.ContentStatusOK
+	}
+	if draft.CreatedTime > time.Now().Unix() {
+		// 未来时间，设置为待发布
+		draft.Status = config.ContentStatusPlan
+	}
+	if req.Draft {
+		draft.Status = config.ContentStatusDraft
+	}
+	if req.UrlToken != "" {
+		draft.UrlToken = req.UrlToken
+	}
+	// 判断重复
+	if utf8.RuneCountInString(req.Title) > 190 {
+		req.Title = string([]rune(req.Title)[:190])
+		if strings.Count(req.Title, " ") > 1 {
+			req.Title = req.Title[:strings.LastIndexAny(req.Title, " ")]
+		}
+	}
+	// 提取描述：没传（nil）或整表单提交时留空，都按正文自动截取；
+	// PATCH 下显式传空串表示「清空描述」，不再自动回填。
+	if req.Description == nil || (req.UpdateAll && *req.Description == "") {
+		tmpContent := req.Content
+		if w.Content.Editor == "markdown" {
+			tmpContent = library.MarkdownToHTML(tmpContent)
+		}
+		req.Description = library.Ptr(library.ParseDescription(strings.ReplaceAll(CleanTagsAndSpaces(tmpContent), "\n", " "), 250))
+	}
+	// 限制数量
+	if req.Description != nil {
+		descRunes := []rune(*req.Description)
+		if len(descRunes) > 1000 {
+			req.Description = library.Ptr(string(descRunes[:1000]))
+		}
+	}
+	if len(req.Flag) > 0 && req.Flags == nil {
+		req.Flags = library.Ptr(strings.Split(req.Flag, ","))
+	}
+
+	if req.QuickSave {
+		// 快速保存只处理标题/关键词/描述/分类/图片，其余字段一律不动。
+		if req.ModuleId > 0 {
+			draft.ModuleId = req.ModuleId
+		}
+		if req.Title != "" {
+			draft.Title = req.Title
+		}
+		if req.Keywords != nil {
+			draft.Keywords = *req.Keywords
+		}
+		if req.Description != nil {
+			draft.Description = *req.Description
+		}
+		if req.CategoryId > 0 {
+			draft.CategoryId = req.CategoryId
+		}
+		if req.Images != nil {
+			draft.Images = *req.Images
+		}
+		// 保存主表
+		if isReleased {
+			// 已发布的，quickSave 就保存到正式表
+			if err = w.DB.Save(&draft.Archive).Error; err != nil {
+				return nil, err
+			}
+		} else {
+			// 否则保存到草稿表
+			if err = w.DB.Save(&draft).Error; err != nil {
+				return nil, err
+			}
+		}
+		if req.Content != "" {
+			// 保存内容表
+			archiveData := model.ArchiveData{
+				Id:      draft.Id,
+				Content: req.Content,
+			}
+			w.DB.Save(&archiveData)
+		}
+		// 保存Flags
+		if req.Flags != nil {
+			_ = w.SaveArchiveFlags(draft.Id, *req.Flags)
+		}
+		if req.CategoryIds != nil {
+			// 保存分类ID
+			_ = w.SaveArchiveCategories(draft.Id, *req.CategoryIds)
+		}
+		// tags：传了 tags（含空数组）就按传入值覆盖，没传则只做自动匹配
+		if req.Tags != nil {
+			_ = w.SaveTagData(draft.Id, *req.Tags)
+		} else if w.Content.MatchTag == 1 {
+			// 自动匹配标签
+			_ = w.AutoMatchTag(&draft.Archive)
+		}
+
+		// 清除缓存
+		draft.Link = w.GetUrl("archive", &draft.Archive, 0)
+		w.DeleteArchiveCache(draft.Id, draft.UrlToken, draft.Link)
+		w.DeleteArchiveExtraCache(draft.Id)
+
+		hookCtx.Point = AfterArchivePost
+		hookCtx.Data = draft
+		_ = TriggerHook(hookCtx)
+		if isReleased {
+			err = w.SuccessReleaseArchive(&draft.Archive, newPost)
+		}
+		// 返回结果
+		return &draft.Archive, nil
+	}
+	// 正常的保存行为
+	//
+	// ⚠️ 标量字段一律「指针非 nil 才写」，不再用 `req.X > 0` / `req.X != ""`：
+	// 后者让 0/false/空串无法写入（售罄、禁用、清空 SEO 标题都是合法意图），
+	// 并且在 partial 调用（AI/MCP 默认 PATCH）里，请求体没带的字段会被静默清零。
+	// 这条规则对本函数管辖的全部模型生效，新增字段必须遵守（护栏见
+	// provider/archive_zero_guard_test.go）。
+	if newPost {
+		// 新建时 Request 的 nil = "没填"，要落成数据库默认值而不是零值。
+		// GORM 的 Save 写全列，DB 的 DEFAULT 不生效，所以默认值必须在这里显式给：
+		// product_type 缺省为 1（普通商品），stock 缺省为 9999999（不限量）。
+		draft.ProductType = config.ProductTypeNormal
+		draft.Stock = 9999999
+	}
+	if req.UpdateAll || req.ModuleId > 0 {
+		draft.ModuleId = req.ModuleId
+	}
+	if req.ParentId != nil {
+		draft.ParentId = *req.ParentId
+	}
+	if req.PlaceId != nil {
+		draft.PlaceId = *req.PlaceId
+	}
+	// 标题必填，空值永远不是合法写入值：UpdateAll 下漏传也不能把已有标题清空。
+	if req.Title != "" {
+		draft.Title = req.Title
+	}
+	if req.SeoTitle != nil {
+		draft.SeoTitle = *req.SeoTitle
+	}
+	if req.Keywords != nil {
+		draft.Keywords = *req.Keywords
+	}
+	if req.Description != nil {
+		draft.Description = *req.Description
+	}
+	if req.UpdateAll || req.CategoryId > 0 {
+		draft.CategoryId = req.CategoryId
+	}
+	if req.Images != nil {
+		draft.Images = *req.Images
+	}
+	if req.Template != nil {
+		draft.Template = *req.Template
+	}
+	if req.CanonicalUrl != nil {
+		draft.CanonicalUrl = *req.CanonicalUrl
+	}
+	oldFixedLink := ""
+	if req.FixedLink != nil {
+		oldFixedLink = draft.FixedLink
+		draft.FixedLink = *req.FixedLink
+	}
+	if req.Price != nil {
+		draft.Price = *req.Price
+	}
+	if req.Stock != nil {
+		draft.Stock = *req.Stock
+	}
+	if req.ReadLevel != nil {
+		draft.ReadLevel = *req.ReadLevel
+	}
+	if req.Password != nil {
+		draft.Password = *req.Password
+	}
+	if req.Sort != nil {
+		draft.Sort = *req.Sort
+	}
+	if req.UserId != nil {
+		draft.UserId = *req.UserId
+	}
+	if req.Views != nil {
+		draft.Views = *req.Views
+	}
+
+	if req.KeywordId != nil {
+		draft.KeywordId = *req.KeywordId
+	}
+	if req.OriginUrl != "" {
+		if utf8.RuneCountInString(req.OriginUrl) > 190 {
+			req.OriginUrl = string([]rune(req.OriginUrl)[:190])
+		}
+		draft.OriginUrl = req.OriginUrl
+	}
+	if req.OriginTitle != "" {
+		if utf8.RuneCountInString(req.OriginTitle) > 190 {
+			req.OriginTitle = string([]rune(req.OriginTitle)[:190])
+		}
+		draft.OriginTitle = req.OriginTitle
+	}
+	if req.OriginId != nil {
+		draft.OriginId = *req.OriginId
+	}
+	// 产品的字段
+	if req.OriginPrice != nil {
+		draft.OriginPrice = *req.OriginPrice
+	}
+	if req.CostPrice != nil {
+		draft.CostPrice = *req.CostPrice
+	}
+	if req.VideoUrl != nil {
+		draft.VideoUrl = *req.VideoUrl
+	}
+	if req.NeedLogistics != nil {
+		draft.NeedLogistics = *req.NeedLogistics
+	}
+	if req.IsFreeShipping != nil {
+		draft.IsFreeShipping = *req.IsFreeShipping
+	}
+	if req.OptionType != nil {
+		draft.OptionType = *req.OptionType
+	}
+	if req.Weight != nil {
+		draft.Weight = *req.Weight
+	}
+	if req.WeightUnit != nil {
+		draft.WeightUnit = *req.WeightUnit
+	}
+	if req.Length != nil {
+		draft.Length = *req.Length
+	}
+	if req.Width != nil {
+		draft.Width = *req.Width
+	}
+	if req.Height != nil {
+		draft.Height = *req.Height
+	}
+	if req.Volume != nil {
+		draft.Volume = *req.Volume
+	}
+	if req.LengthUnit != nil {
+		draft.LengthUnit = *req.LengthUnit
+	}
+	if req.MinQuantity != nil {
+		draft.MinQuantity = *req.MinQuantity
+	}
+	if req.MaxQuantity != nil {
+		draft.MaxQuantity = *req.MaxQuantity
+	}
+	if req.StepQuantity != nil {
+		draft.StepQuantity = *req.StepQuantity
+	}
+	if req.ProductType != nil {
+		draft.ProductType = *req.ProductType
+	}
+	if req.AllowOversold != nil {
+		draft.AllowOversold = *req.AllowOversold
+	}
+	// 定制商品的订单字段与 product_type 是绑定关系：非定制商品必须清空，
+	// 否则会留下上一次是定制商品时的表单定义（前台会继续要求填写）。
+	if req.OrderFields != nil {
+		if draft.ProductType == config.ProductTypeCustom {
+			draft.OrderFields = *req.OrderFields
+		} else {
+			draft.OrderFields = nil
+		}
+	} else if draft.ProductType != config.ProductTypeCustom {
+		draft.OrderFields = nil
+	}
+	if req.Brand != nil {
+		draft.Brand = *req.Brand
+	}
+	if req.HasPseudo != nil {
+		draft.HasPseudo = *req.HasPseudo
+	}
+	if req.SoldCount != nil {
+		draft.SoldCount = *req.SoldCount
+	}
+	if req.ReviewCount != nil {
+		draft.ReviewCount = *req.ReviewCount
+	}
+	if req.CommentCount != nil {
+		draft.CommentCount = *req.CommentCount
+	}
+	if req.FavoriteCount != nil {
+		draft.FavoriteCount = *req.FavoriteCount
+	}
+	if req.AverageScore != nil {
+		draft.AverageScore = *req.AverageScore
+	}
+
+	module = w.GetModuleFromCache(draft.ModuleId)
+	if module == nil {
+		return nil, errors.New(w.Tr("UndefinedModel"))
+	}
+
+	extraFields := map[string]interface{}{}
+	if req.UpdateAll || req.Extra != nil {
+		//extra
+		if len(module.Fields) > 0 {
+			for _, v := range module.Fields {
+				// 必填校验只在「后台整表单提交」时做。
+				// PATCH 调用（AI/MCP）通常只带一两个扩展字段，剩下的缺失是正常的，
+				// 在这里报必填会让「只改一个自定义字段」永远失败。
+				if v.Required && req.UpdateAll && req.Extra[v.FieldName] == nil {
+					return nil, errors.New(w.Tr("%sIsRequired", v.Name))
+				}
+				if req.Extra[v.FieldName] != nil {
+					extraValue, ok := req.Extra[v.FieldName].(map[string]interface{})
+					if ok {
+						if v.Required && extraValue["value"] == nil && extraValue["value"] == "" {
+							return nil, errors.New(w.Tr("%sIsRequired", v.Name))
+						}
+						if v.Type == config.CustomFieldTypeCheckbox {
+							//只有这个类型的数据是数组,数组转成,分隔字符串
+							if val, ok := extraValue["value"].([]interface{}); ok {
+								var val2 []string
+								for _, v2 := range val {
+									v2s, _ := v2.(string)
+									val2 = append(val2, v2s)
+								}
+								extraFields[v.FieldName] = strings.Join(val2, ",")
+							} else if val, ok := extraValue["value"].([]string); ok {
+								extraFields[v.FieldName] = strings.Join(val, ",")
+							} else if extraValue["value"] != nil {
+								extraFields[v.FieldName] = extraValue["value"]
+							}
+						} else if v.Type == config.CustomFieldTypeNumber || v.Type == config.CustomFieldTypeCategory {
+							//只有这个类型的数据是数字，转成数字
+							extraFields[v.FieldName], _ = strconv.ParseInt(fmt.Sprint(extraValue["value"]), 10, 64)
+						} else if v.Type == config.CustomFieldTypeImages || v.Type == config.CustomFieldTypeTexts || v.Type == config.CustomFieldTypeArchive {
+							// 存 json
+							if val, ok := extraValue["value"].([]interface{}); ok {
+								for j, v2 := range val {
+									v2s, ok2 := v2.(string)
+									if ok2 {
+										val[j] = w.ReplaceContentUrl(v2s, false)
+									}
+								}
+								buf, _ := json.Marshal(val)
+								extraFields[v.FieldName] = string(buf)
+							}
+						} else if v.Type == config.CustomFieldTypeTimeline {
+							// 存 json
+							buf, _ := json.Marshal(extraValue["value"])
+							extraFields[v.FieldName] = string(buf)
+						} else {
+							value, ok := extraValue["value"].(string)
+							if ok {
+								if v.Type == config.CustomFieldTypeImage || v.Type == config.CustomFieldTypeFile || v.Type == config.CustomFieldTypeEditor {
+									extraFields[v.FieldName] = w.ReplaceContentUrl(value, false)
+								} else {
+									extraFields[v.FieldName] = extraValue["value"]
+								}
+							} else {
+								extraFields[v.FieldName] = extraValue["value"]
+							}
+						}
+					}
+				} else if req.UpdateAll {
+					// 只有整表单提交才把「没出现的字段」当作用户清空；
+					// PATCH 时没传的扩展字段必须保持原值，否则改一个字段会抹掉其余自定义字段。
+					if v.Type == config.CustomFieldTypeNumber {
+						//只有这个类型的数据是数字，转成数字
+						extraFields[v.FieldName] = 0
+					} else {
+						extraFields[v.FieldName] = ""
+					}
+				}
+			}
+		}
+	}
+
+	if req.UpdateAll && (req.Flags == nil || len(*req.Flags) == 0) {
+		imgRe, _ := regexp.Compile(`(?i)<img.*?src=["'](.+?)["'].*?>`)
+		hasImage := imgRe.MatchString(req.Content)
+		if !hasImage {
+			// 匹配Markdown ![新的图片](http://xxx/xxx.webp)
+			imgRe, _ = regexp.Compile(`!\[([^]]*)\]\(([^)]+)\)`)
+			hasImage = imgRe.MatchString(req.Content)
+		}
+		if hasImage {
+			req.Flags = library.Ptr([]string{"p"})
+		}
+	}
+
+	baseHost := ""
+
+	frontUrl := w.System.BaseUrl
+	if w.System.FrontUrl != "" {
+		frontUrl = w.System.FrontUrl
+	}
+	urls, err := url.Parse(frontUrl)
+	if err == nil {
+		baseHost = urls.Host
+	}
+
+	if req.Content != "" {
+		// 将单个&nbsp;替换为空格
+		req.Content = library.ReplaceSingleSpace(req.Content)
+		// todo 应该只替换 src,href 中的 baseUrl
+		req.Content = w.ReplaceContentUrl(req.Content, false)
+		// 图片Alt优化：为没有 alt 的图片填充文档标题（保存时固化，渲染零开销）
+		if w.Content.ImgAltAuto == 1 {
+			req.Content = FillContentImgAlt(req.Content, draft.Title)
+		}
+		//提取缩略图
+		if len(draft.Images) == 0 {
+			re, _ := regexp.Compile(`(?i)<img.*?src=["'](.+?)["'].*?>`)
+			match := re.FindStringSubmatch(req.Content)
+			if len(match) > 1 {
+				draft.Images = append(draft.Images, match[1])
+			} else {
+				// 匹配Markdown ![新的图片](http://xxx/xxx.webp)
+				re, _ = regexp.Compile(`!\[([^]]*)\]\(([^)]+)\)`)
+				match = re.FindStringSubmatch(req.Content)
+				if len(match) > 2 {
+					draft.Images = append(draft.Images, match[2])
+				}
+			}
+		}
+		// 过滤外链，1=移除，2=nofollow
+		if w.Content.FilterOutlink == 1 || w.Content.FilterOutlink == 2 {
+			re, _ := regexp.Compile(`(?i)<a.*?href="(.+?)".*?>(.*?)</a>`)
+			req.Content = re.ReplaceAllStringFunc(req.Content, func(s string) string {
+				match := re.FindStringSubmatch(s)
+				if len(match) < 3 {
+					return s
+				}
+				aUrl, err2 := url.Parse(match[1])
+				if err2 == nil {
+					if aUrl.Host != "" && aUrl.Host != baseHost {
+						//过滤外链
+						if w.Content.FilterOutlink == 1 {
+							return match[2]
+						} else if !strings.Contains(match[0], "nofollow") {
+							newUrl := match[1] + `" rel="nofollow`
+							s = strings.Replace(s, match[1], newUrl, 1)
+						}
+					}
+				}
+				return s
+			})
+			// 匹配Markdown [link](url)
+			// 由于不支持零宽断言，因此匹配所有
+			re, _ = regexp.Compile(`!?\[([^]]*)\]\(([^)]+)\)`)
+			req.Content = re.ReplaceAllStringFunc(req.Content, func(s string) string {
+				// 过滤掉 ! 开头的
+				if strings.HasPrefix(s, "!") {
+					return s
+				}
+				match := re.FindStringSubmatch(s)
+				if len(match) < 3 {
+					return s
+				}
+				aUrl, err2 := url.Parse(match[2])
+				if err2 == nil {
+					if aUrl.Host != "" && aUrl.Host != baseHost {
+						//过滤外链
+						if w.Content.FilterOutlink == 1 {
+							return match[1]
+						}
+						// 添加 nofollow 不在这里处理，因为md不支持
+					}
+				}
+				return s
+			})
+		}
+	}
+
+	for i, v := range draft.Images {
+		draft.Images[i] = strings.TrimPrefix(v, w.PluginStorage.StorageUrl)
+	}
+	// 如果是 已经发布了的，则保存到正式表
+	if isReleased {
+		err = w.DB.Save(&draft.Archive).Error
+		if err != nil {
+			return nil, err
+		}
+		// 如果status 不是 1，则删除正式表内容，保存到草稿
+		if draft.Status != config.ContentStatusOK {
+			isReleased = false
+			// 从 archives 表删除
+			if err = w.DB.Delete(&draft.Archive).Error; err != nil {
+				return nil, err
+			}
+			// 数据移到 archiveDraft 表
+			w.DB.Save(draft)
+		}
+	} else {
+		// 保存到草稿
+		err = w.DB.Save(draft).Error
+		if err != nil {
+			return nil, err
+		}
+		// 如果是正式发布，则删除草稿，并保存到正式表
+		if draft.Status == config.ContentStatusOK {
+			isReleased = true
+			// 保存到正式表
+			w.DB.Save(&draft.Archive)
+			// 并删除草稿
+			w.DB.Delete(draft)
+		}
+	}
+	archiveData := model.ArchiveData{}
+	archiveData.Id = draft.Id
+	if req.UpdateAll || req.Content != "" {
+		// 保存内容表
+		archiveData.Content = req.Content
+		err = w.DB.Save(&archiveData).Error
+		if err != nil {
+			return nil, err
+		}
+	}
+	if req.Flags != nil {
+		// 保存Flags；空数组表示清空标记
+		_ = w.SaveArchiveFlags(draft.Id, *req.Flags)
+	}
+	if req.CategoryIds != nil {
+		// 保存分类ID
+		_ = w.SaveArchiveCategories(draft.Id, *req.CategoryIds)
+	}
+	if isReleased {
+		// 更新分类的文档计数
+		// 如果文档数量大于100万，则不自动计数
+		totalArchive := w.GetExplainCount("SELECT id FROM archives")
+		if totalArchive < 1000000 {
+			for _, catId := range library.Deref(req.CategoryIds) {
+				w.UpdateCategoryArchiveCount(catId)
+			}
+		}
+	}
+	if req.UpdateAll || len(req.Options) > 0 {
+		// 产品保存sku
+		_ = w.SaveArchiveOptions(draft, req.Options, req.Skus)
+	}
+	if req.UpdateAll || len(req.WholesaleRules) > 0 {
+		// 保存wholesaleRules
+		_ = w.SaveArchiveWholesaleRules(draft.Id, req.WholesaleRules)
+	}
+	if req.RelationIds != nil {
+		// 保存 Relations；空数组表示清空关联
+		_ = w.SaveArchiveRelations(draft.Id, *req.RelationIds)
+	}
+	if req.Content != "" {
+		//检查有多少个material
+		var materialIds []uint
+		re, _ := regexp.Compile(`(?i)<div.*?data-material="(\d+)".*?>`)
+		matches := re.FindAllStringSubmatch(req.Content, -1)
+		if len(matches) > 0 {
+			for _, match := range matches {
+				//记录material
+				materialId, _ := strconv.Atoi(match[1])
+				if materialId > 0 {
+					materialIds = append(materialIds, uint(materialId))
+				}
+			}
+		}
+		go w.LogMaterialData(materialIds, "archive", draft.Id)
+	}
+	// 自动提取远程图片改成保存后处理
+	if w.Content.RemoteDownload == 1 {
+		// 处理 images
+		hasChangeImg := false
+		for i, v := range draft.Images {
+			if strings.HasPrefix(v, w.PluginStorage.StorageUrl) {
+				continue
+			}
+			if strings.HasPrefix(v, "//") || strings.HasPrefix(v, "http") {
+				imgUrl, err2 := url.Parse(v)
+				if err2 == nil && imgUrl.Host != "" && imgUrl.Host != baseHost {
+					// 自动下载
+					attachment, err2 := w.DownloadRemoteImage(v, draft.Title, 0)
+					if err2 == nil {
+						// 下载完成
+						draft.Images[i] = strings.TrimPrefix(attachment.Logo, w.PluginStorage.StorageUrl)
+						hasChangeImg = true
+					}
+				}
+			}
+		}
+		if hasChangeImg {
+			if isReleased {
+				w.DB.Model(&draft.Archive).UpdateColumn("images", draft.Images)
+			} else {
+				w.DB.Model(draft).UpdateColumn("images", draft.Images)
+			}
+		}
+		hasChangeImg = false
+		if archiveData.Content != "" {
+			re, _ := regexp.Compile(`(?i)<img.*?src="(.+?)".*?>`)
+			archiveData.Content = re.ReplaceAllStringFunc(archiveData.Content, func(s string) string {
+				match := re.FindStringSubmatch(s)
+				if len(match) < 2 {
+					return s
+				}
+				imgUrl, err2 := url.Parse(match[1])
+				if err2 == nil {
+					if imgUrl.Host != "" && imgUrl.Host != baseHost && !strings.HasPrefix(match[1], w.PluginStorage.StorageUrl) {
+						//外链
+						attachment, err2 := w.DownloadRemoteImage(match[1], draft.Title, 0)
+						if err2 == nil {
+							// 下载完成
+							hasChangeImg = true
+							s = strings.Replace(s, match[1], attachment.Logo, 1)
+						}
+					}
+				}
+				return s
+			})
+			// 匹配Markdown ![新的图片](http://xxx/xxx.webp)
+			re, _ = regexp.Compile(`!\[([^]]*)\]\(([^)]+)\)`)
+			archiveData.Content = re.ReplaceAllStringFunc(archiveData.Content, func(s string) string {
+				match := re.FindStringSubmatch(s)
+				if len(match) < 3 {
+					return s
+				}
+				imgUrl, err2 := url.Parse(match[2])
+				if err2 == nil {
+					if imgUrl.Host != "" && imgUrl.Host != baseHost && !strings.HasPrefix(match[2], w.PluginStorage.StorageUrl) {
+						//外链
+						attachment, err2 := w.DownloadRemoteImage(match[2], draft.Title, 0)
+						if err2 == nil {
+							// 下载完成
+							hasChangeImg = true
+							s = strings.Replace(s, match[2], attachment.Logo, 1)
+						}
+					}
+				}
+				return s
+			})
+			if hasChangeImg {
+				w.DB.Model(&archiveData).UpdateColumn("content", archiveData.Content)
+			}
+		}
+	}
+	//extra
+	if len(extraFields) > 0 {
+		//入库
+		// 先检查是否存在
+		var existsId int64
+		w.DB.Table(module.TableName).Where("`id` = ?", draft.Id).Pluck("id", &existsId)
+		if existsId > 0 {
+			// 已存在
+			w.DB.Table(module.TableName).Where("`id` = ?", draft.Id).Updates(extraFields)
+		} else {
+			// 新建
+			extraFields["id"] = draft.Id
+			w.DB.Table(module.TableName).Where("`id` = ?", draft.Id).Create(extraFields)
+		}
+	}
+	// 如果没有图片
+	if len(draft.Images) == 0 && w.PluginTitleImage.Open {
+		draft.ArchiveData = &archiveData
+		// 自动生成一个
+		go func() {
+			logo, content, err := w.NewTitleImage().DrawTitles(draft.Title, archiveData.Content)
+			if err == nil {
+				if content != archiveData.Content {
+					w.DB.Model(&archiveData).UpdateColumn("content", content)
+				}
+				if len(logo) > 0 {
+					draft.Images = append(draft.Images, strings.TrimPrefix(logo, w.PluginStorage.StorageUrl))
+				}
+				if isReleased {
+					w.DB.Model(&draft.Archive).UpdateColumn("images", draft.Images)
+				} else {
+					w.DB.Model(draft).UpdateColumn("images", draft.Images)
+				}
+			}
+		}()
+	}
+
+	if req.Tags != nil {
+		// 传了 tags（含空数组）就按传入值覆盖，空数组表示清空；没传则保持原标签。
+		_ = w.SaveTagData(draft.Id, *req.Tags)
+	} else if req.UpdateAll && w.Content.MatchTag == 1 {
+		// 自动匹配标签
+		_ = w.AutoMatchTag(&draft.Archive)
+	}
+
+	// 缓存清理
+	if oldFixedLink != "" || draft.FixedLink != "" {
+		w.DeleteCacheFixedLinks()
+	}
+	// 清除缓存
+	draft.Link = w.GetUrl("archive", &draft.Archive, 0)
+	w.DeleteArchiveCache(draft.Id, draft.UrlToken, draft.Link)
+	w.DeleteArchiveExtraCache(draft.Id)
+
+	hookCtx.Point = AfterArchivePost
+	hookCtx.Data = draft
+	_ = TriggerHook(hookCtx)
+	if isReleased {
+		draft.ArchiveData = &archiveData
+		err = w.SuccessReleaseArchive(&draft.Archive, newPost)
+	} else {
+		draft.Link += "?preview=true"
+	}
+
+	return &draft.Archive, nil
+}
+
+// SuccessReleaseArchive
+// 文章发布成功后的一些处理
+func (w *Website) SuccessReleaseArchive(archive *model.Archive, newPost bool) error {
+	hookCtx := &HookContext{
+		Point: AfterArchiveRelease,
+		Site:  w,
+		Data:  archive,
+	}
+	_ = TriggerHook(hookCtx)
+
+	archive.GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(archive.Id)))
+	if archive.Link == "" {
+		archive.Link = w.GetUrl("archive", archive, 0)
+	}
+	//添加锚文本
+	if w.PluginAnchor.ReplaceWay == 1 {
+		go w.ReplaceContent(nil, "archive", archive.Id, archive.Link)
+	}
+	//提取锚文本
+	if w.PluginAnchor.KeywordWay == 1 {
+		go w.AutoInsertAnchor(archive.Id, archive.Keywords, archive.Link)
+	}
+	// 添加索引
+	go func() {
+		// 尝试添加全文索引
+		tinyData := fulltext.TinyArchive{
+			Id:          archive.Id,
+			Type:        fulltext.ArchiveType,
+			ModuleId:    archive.ModuleId,
+			CategoryId:  archive.CategoryId,
+			Title:       archive.Title,
+			Keywords:    archive.Keywords,
+			Description: archive.Description,
+		}
+		if archive.ArchiveData != nil {
+			tinyData.Content = archive.ArchiveData.Content
+		}
+		w.AddFulltextIndex(tinyData)
+		w.FlushIndex()
+	}()
+	//// 删除列表缓存
+	//w.Cache.CleanAll("archive-list")
+	//// 删除首页缓存
+	//w.DeleteCacheIndex()
+	// 如果启用了google推送
+	// 产品判定走 modules.kind，不再硬编码 id==2
+	if w.IsProductModule(archive.ModuleId) {
+		googlgeMerchantSetting := w.GetGoogleMerchantSetting()
+		if googlgeMerchantSetting.Open {
+			// 检查是否是首次推送
+			go w.StartSyncGoogleMerchantProducts(false, archive)
+		}
+	}
+
+	//新发布的文章，执行推送
+	if newPost {
+		go func() {
+			w.PushArchives([]string{archive.Link})
+		}()
+		if w.PluginSitemap.AutoBuild == 1 {
+			go w.AddonSitemap("archive", archive.Link, time.Unix(archive.UpdatedTime, 0).Format("2006-01-02"), archive)
+		}
+	}
+	// 更新缓存
+	if w.PluginHtmlCache.Open && w.PluginHtmlCache.StorageType != "" && w.CacheStorage != nil {
+		go func() {
+			// 生成文章页，生成栏目页，生成首页，生成tag
+			// 上传到静态服务器
+			cachePath := w.CachePath + "pc"
+			// 生成首页
+			w.BuildIndexCache()
+			_ = w.SyncHtmlCacheToStorage(cachePath+"/index.html", "index.html")
+			// 生成文章页
+			link := w.GetUrl("archive", archive, 0)
+
+			frontUrl := w.System.BaseUrl
+			if w.System.FrontUrl != "" {
+				frontUrl = w.System.FrontUrl
+			}
+			link = strings.TrimPrefix(link, frontUrl)
+			_ = w.GetAndCacheHtmlData(link, false)
+			if w.System.TemplateType != config.TemplateTypeAuto {
+				_ = w.GetAndCacheHtmlData(link, true)
+			}
+			archivePath := cachePath + transToLocalPath(link, "")
+			_ = w.SyncHtmlCacheToStorage(archivePath, link)
+			// 生成栏目页，只生成第一页
+			category := w.GetCategoryFromCache(archive.CategoryId)
+			if category != nil {
+				link = w.GetUrl("category", category, 0)
+				link = strings.TrimPrefix(link, frontUrl)
+				_ = w.GetAndCacheHtmlData(link, false)
+				if w.System.TemplateType != config.TemplateTypeAuto {
+					_ = w.GetAndCacheHtmlData(link, true)
+				}
+				categoryPath := cachePath + transToLocalPath(link, "")
+				_ = w.SyncHtmlCacheToStorage(categoryPath, link)
+			}
+			// 生成Tag，只生成第一页
+			tags := w.GetTagsByItemId(archive.Id)
+			if len(tags) > 0 {
+				link = w.GetUrl("tagIndex", nil, 0)
+				link = strings.TrimPrefix(link, frontUrl)
+				// 先生成首页
+				_ = w.GetAndCacheHtmlData(link, false)
+				if w.System.TemplateType != config.TemplateTypeAuto {
+					_ = w.GetAndCacheHtmlData(link, true)
+				}
+				tagPath := cachePath + transToLocalPath(link, "")
+				_ = w.SyncHtmlCacheToStorage(tagPath, link)
+				for _, tag := range tags {
+					link = w.GetUrl("tag", tag, 0)
+					link = strings.TrimPrefix(link, frontUrl)
+					_ = w.GetAndCacheHtmlData(link, false)
+					if w.System.TemplateType != config.TemplateTypeAuto {
+						_ = w.GetAndCacheHtmlData(link, true)
+					}
+					tagPath = cachePath + transToLocalPath(link, "")
+					_ = w.SyncHtmlCacheToStorage(tagPath, link)
+				}
+			}
+		}()
+	}
+
+	// 生成LLMs.txt
+	go w.ImmediateLLMsBuild()
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveUrlToken(archive *model.Archive) error {
+	if archive.UrlToken == "" {
+		archive.UrlToken = w.VerifyArchiveUrlToken(archive.UrlToken, archive.Title, archive.Id)
+
+		w.DB.Model(&model.Archive{}).Where("`id` = ?", archive.Id).UpdateColumn("url_token", archive.UrlToken)
+	}
+
+	return nil
+}
+
+func (w *Website) RecoverArchive(draft *model.ArchiveDraft) error {
+	w.PublishPlanArchive(draft)
+	go func() {
+		var doc fulltext.TinyArchive
+		w.DB.Table("`archives` as archives").Joins("left join `archive_data` as d on archives.id=d.id").Select("archives.id,archives.title,archives.keywords,archives.description,archives.module_id,archives.category_id,d.content,'archive' as `type`").Where("archives.`id` > ?", draft.Id).Take(&doc)
+		// 尝试添加全文索引
+		w.AddFulltextIndex(doc)
+	}()
+
+	return nil
+}
+
+func (w *Website) DeleteArchive(archive *model.Archive) error {
+	// 数据移到 archiveDraft 表
+	draft := &model.ArchiveDraft{
+		Archive: *archive,
+	}
+	draft.Status = config.ContentStatusDelete
+	err := w.DB.Model(&model.ArchiveDraft{}).Where("`id` = ?", draft.Id).Save(draft).Error
+	if err != nil {
+		return err
+	}
+	// 从 archives 表删除
+	if err = w.DB.Unscoped().Delete(archive).Error; err != nil {
+		return err
+	}
+	// 如果文档数量大于100万，则不自动计数
+	totalArchive := w.GetExplainCount("SELECT id FROM archives")
+	if totalArchive < 1000000 {
+		// 更新文档计数
+		w.UpdateCategoryArchiveCount(archive.CategoryId)
+	}
+	if archive.FixedLink != "" {
+		w.DeleteCacheFixedLinks()
+	}
+	w.DeleteCacheIndex()
+	// 删除列表缓存
+	w.Cache.CleanAll("archive-list")
+	w.RemoveHtmlCache(w.GetUrl("archive", archive, 0))
+	w.RemoveFulltextIndex(fulltext.TinyArchive{Id: archive.Id, Type: fulltext.ArchiveType})
+	// 每次删除文档，都清理一次Sitemap
+	if w.PluginSitemap.AutoBuild == 1 {
+		w.DeleteSitemap(w.PluginSitemap.Type)
+	}
+
+	return nil
+}
+
+func (w *Website) DeleteArchiveDraft(draft *model.ArchiveDraft) error {
+	w.DB.Unscoped().Delete(draft)
+	// 删除 文档内容
+	w.DB.Unscoped().Where("`id` = ?", draft.Id).Delete(&model.ArchiveData{})
+	// 删除 文档分类
+	w.DB.Unscoped().Where("`archive_id` = ?", draft.Id).Delete(&model.ArchiveCategory{})
+	// 删除 文档Flag
+	w.DB.Unscoped().Where("`archive_id` = ?", draft.Id).Delete(&model.ArchiveFlag{})
+	// 删除 文档TagData
+	w.DB.Unscoped().Where("`item_id` = ?", draft.Id).Delete(&model.TagData{})
+	// 删除商品属性。只在彻底删除时清：回收站/撤回发布只是在 archives 和
+	// archive_drafts 之间搬行、ID 不变，侧表跟着 ID 走，不用动。
+	w.DB.Unscoped().Where("`archive_id` = ?", draft.Id).Delete(&model.ArchiveProduct{})
+	// 删除模型数据
+	module := w.GetModuleFromCache(draft.ModuleId)
+	if module != nil {
+		w.DB.Exec("DELETE FROM ? WHERE `id` = ?", clause.Table{Name: module.TableName}, draft.Id)
+	}
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveRecommend(req *request.ArchiveFlagsRequest) error {
+	if len(req.Ids) == 0 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+	for _, id := range req.Ids {
+		_ = w.SaveArchiveFlags(id, strings.Split(req.Flag, ","))
+	}
+	// 删除列表缓存
+	w.Cache.CleanAll("archive-list")
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveStatus(req *request.ArchiveStatusRequest) error {
+	if len(req.Ids) == 0 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+	if req.Status == config.ContentStatusOK {
+		// 改成正式发布
+		var drafts []*model.ArchiveDraft
+		w.DB.Model(&model.ArchiveDraft{}).Where("`id` IN (?)", req.Ids).Find(&drafts)
+		for _, draft := range drafts {
+			draft.CreatedTime = time.Now().Unix()
+			draft.UpdatedTime = time.Now().Unix()
+			w.PublishPlanArchive(draft)
+		}
+	} else {
+		// 从正式表移到草稿表
+		hasFixedLink := false
+		var archives []*model.Archive
+		w.DB.Model(&model.Archive{}).Where("`id` IN (?)", req.Ids).Find(&archives)
+		for _, archive := range archives {
+			// 转为草稿
+			// 数据移到 archiveDraft 表
+			draft := &model.ArchiveDraft{
+				Archive: *archive,
+			}
+			draft.Status = config.ContentStatusDraft
+			err := w.DB.Model(&model.ArchiveDraft{}).Where("`id` = ?", draft.Id).Save(draft).Error
+			if err != nil {
+				return err
+			}
+			// 从 archives 表删除
+			if err := w.DB.Unscoped().Delete(archive).Error; err != nil {
+				return err
+			}
+			if archive.FixedLink != "" {
+				hasFixedLink = true
+			}
+			w.RemoveHtmlCache(w.GetUrl("archive", archive, 0))
+			w.RemoveFulltextIndex(fulltext.TinyArchive{Id: archive.Id, Type: fulltext.ArchiveType})
+		}
+		if hasFixedLink {
+			w.DeleteCacheFixedLinks()
+		}
+		w.DeleteCacheIndex()
+		// 删除列表缓存
+		w.Cache.CleanAll("archive-list")
+	}
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveTime(req *request.ArchivesTimeRequest) error {
+	if len(req.Ids) == 0 && req.Time < 3 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+	var err error
+	if req.Time == 4 {
+		// updated_time 所有文档
+		err = w.DB.Model(&model.Archive{}).Where("`id` > 0").UpdateColumn("updated_time", time.Now().Unix()).Error
+	} else if req.Time == 3 {
+		// created_time 所有文档
+		err = w.DB.Model(&model.Archive{}).Where("`id` > 0").UpdateColumn("created_time", time.Now().Unix()).Error
+	} else if req.Time == 2 {
+		// updated_time
+		err = w.DB.Model(&model.Archive{}).Where("`id` IN (?)", req.Ids).UpdateColumn("updated_time", time.Now().Unix()).Error
+		err = w.DB.Model(&model.ArchiveDraft{}).Where("`id` IN (?)", req.Ids).UpdateColumn("updated_time", time.Now().Unix()).Error
+	} else {
+		err = w.DB.Model(&model.Archive{}).Where("`id` IN (?)", req.Ids).UpdateColumn("created_time", time.Now().Unix()).Error
+		err = w.DB.Model(&model.ArchiveDraft{}).Where("`id` IN (?)", req.Ids).UpdateColumn("created_time", time.Now().Unix()).Error
+	}
+	// 删除列表缓存
+	w.Cache.CleanAll("archive-list")
+	return err
+}
+
+func (w *Website) UpdateArchiveReleasePlan(req *request.ArchivesPlanRequest) error {
+	if len(req.Ids) == 0 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+	num := 0
+	if req.EndHour <= req.StartHour {
+		// 大一小时
+		req.EndHour = req.StartHour + 1
+	}
+	if req.DailyLimit < 1 {
+		req.DailyLimit = len(req.Ids)
+	}
+	// 间隔用秒
+	gap := (req.EndHour - req.StartHour) * 3600 / req.DailyLimit
+	// 从第0天开始
+	dayNum := 0
+	h := time.Now().Hour()
+	if req.EndHour < h {
+		// 当天不发布
+		dayNum++
+	}
+	startTime := now.BeginningOfDay().AddDate(0, 0, dayNum).Add(time.Duration(req.StartHour) * time.Hour)
+	if startTime.Before(time.Now()) {
+		startTime = time.Now()
+	}
+	for _, id := range req.Ids {
+		draft, err := w.GetArchiveDraftById(id)
+		if err != nil {
+			// 文档不存在，跳过
+			continue
+		}
+		num++
+		w.DB.Model(&model.ArchiveDraft{}).Where("`id` = ?", draft.Id).UpdateColumns(map[string]interface{}{
+			"created_time": startTime.Unix(),
+			"updated_time": startTime.Unix(),
+			"status":       config.ContentStatusPlan,
+		})
+		startTime = startTime.Add(time.Duration(gap) * time.Second)
+		if startTime.Hour() >= req.EndHour {
+			// 达到数量加一天
+			dayNum++
+			// 重置时间
+			startTime = now.BeginningOfDay().AddDate(0, 0, dayNum).Add(time.Duration(req.StartHour) * time.Hour)
+		}
+
+	}
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveParent(req *request.ArchivesParentRequest) error {
+	if len(req.Ids) == 0 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+
+	// 同步更新
+	w.DB.Model(&model.Archive{}).Where("id IN(?)", req.Ids).UpdateColumn("parent_id", req.ParentId)
+	w.DB.Model(&model.ArchiveDraft{}).Where("id IN(?)", req.Ids).UpdateColumn("parent_id", req.ParentId)
+	// 删除列表缓存
+	w.Cache.CleanAll("archive-list")
+	// end
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveCategory(req *request.ArchiveCategoryRequest) error {
+	if len(req.Ids) == 0 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+	// 保存分类ID
+	if len(req.CategoryIds) == 0 && req.CategoryId > 0 {
+		req.CategoryIds = append(req.CategoryIds, req.CategoryId)
+	}
+	var defaultCategory *model.Category
+	for _, catId := range req.CategoryIds {
+		category, err := w.GetCategoryById(catId)
+		if err != nil {
+			return errors.New(w.Tr("CategoryDoesNotExist"))
+		}
+		if defaultCategory == nil {
+			defaultCategory = category
+		}
+	}
+	if len(req.CategoryIds) == 0 || defaultCategory == nil {
+		return errors.New(w.Tr("PleaseSelectACategory"))
+	}
+	for _, arcId := range req.Ids {
+		_ = w.SaveArchiveCategories(arcId, req.CategoryIds)
+	}
+	// 更新主分类ID
+	w.DB.Model(&model.Archive{}).Where("`id` IN(?)", req.Ids).UpdateColumns(map[string]interface{}{
+		"category_id": defaultCategory.Id,
+		"module_id":   defaultCategory.ModuleId,
+	})
+	// 更新草稿表分类ID
+	w.DB.Model(&model.ArchiveDraft{}).Where("`id` IN(?)", req.Ids).UpdateColumns(map[string]interface{}{
+		"category_id": defaultCategory.Id,
+		"module_id":   defaultCategory.ModuleId,
+	})
+	// 删除列表缓存
+	w.Cache.CleanAll("archive-list")
+	// end
+
+	return nil
+}
+
+func (w *Website) UpdateArchiveTags(req *request.ArchivesTagRequest) error {
+	if len(req.Ids) == 0 {
+		return errors.New(w.Tr("NoDocumentToOperate"))
+	}
+	if len(req.Tags) == 0 {
+		return errors.New(w.Tr("PleaseSelectATag"))
+	}
+	var tagIds = make([]uint, 0, len(req.Tags))
+	for _, tagName := range req.Tags {
+		if tagName == "" {
+			continue
+		}
+		tag, err := w.GetTagByTitle(tagName)
+		if err != nil {
+			newToken := w.VerifyTagUrlToken("", tagName, 0)
+			letter := "A"
+			if len(newToken) > 0 && newToken != "-" {
+				letter = string(newToken[0])
+			}
+			tag = &model.Tag{
+				Title:       tagName,
+				UrlToken:    newToken,
+				FirstLetter: strings.ToUpper(letter),
+				Status:      1,
+			}
+			w.DB.Where("`title` = ?", tag.Title).FirstOrCreate(tag)
+
+			link := w.GetUrl("tag", tag, 0)
+			go w.PushArchives([]string{link})
+			if w.PluginSitemap.AutoBuild == 1 {
+				go w.AddonSitemap("tag", link, time.Unix(tag.CreatedTime, 0).Format("2006-01-02"), tag)
+			}
+		}
+		tagIds = append(tagIds, tag.Id)
+	}
+	// 更新TagData
+	for _, arcId := range req.Ids {
+		for _, tagId := range tagIds {
+			tagData := model.TagData{
+				TagId:  tagId,
+				ItemId: arcId,
+			}
+			w.DB.Where("`item_id` = ? and `tag_id` = ?", arcId, tagData.TagId).FirstOrCreate(&tagData)
+		}
+	}
+
+	return nil
+}
+
+// DeleteCacheFixedLinks 固定链接
+func (w *Website) DeleteCacheFixedLinks() {
+	w.Cache.Delete("fixedLinks")
+}
+
+func (w *Website) GetCacheFixedLinks() map[string]int64 {
+	if w.DB == nil {
+		return nil
+	}
+	var fixedLinks = map[string]int64{}
+
+	err := w.Cache.Get("fixedLinks", &fixedLinks)
+	if err == nil {
+		return fixedLinks
+	}
+
+	var archives []model.Archive
+	err = w.DB.Model(model.Archive{}).Where("`fixed_link` != ''").Select("fixed_link", "id").Find(&archives).Error
+	if err != nil {
+		return nil
+	}
+	for i := range archives {
+		fixedLinks[archives[i].FixedLink] = archives[i].Id
+	}
+
+	_ = w.Cache.Set("fixedLinks", fixedLinks, 0)
+
+	return fixedLinks
+}
+
+func (w *Website) GetFixedLinkFromCache(fixedLink string) int64 {
+	links := w.GetCacheFixedLinks()
+
+	archiveId, ok := links[fixedLink]
+	if ok {
+		return archiveId
+	}
+
+	return 0
+}
+
+// PublishPlanArchives 发布计划文章，单次最多处理100篇
+func (w *Website) PublishPlanArchives() {
+	timeStamp := time.Now().Unix()
+
+	var drafts []*model.ArchiveDraft
+	w.DB.Model(&model.ArchiveDraft{}).Where("`status` = ? and created_time < ?", config.ContentStatusPlan, timeStamp).Limit(100).Find(&drafts)
+	if len(drafts) > 0 {
+		for _, draft := range drafts {
+			w.PublishPlanArchive(draft)
+		}
+	}
+}
+
+func (w *Website) PublishPlanArchive(archiveDraft *model.ArchiveDraft) {
+	hookCtx := &HookContext{
+		Point: BeforeArchiveRelease,
+		Site:  w,
+		Data:  archiveDraft,
+	}
+	if err := TriggerHook(hookCtx); err != nil {
+		return
+	}
+	// 发布的步骤：将草稿转移到正式表，删除草稿
+	err := w.DB.Save(&archiveDraft.Archive).Error
+	if err != nil {
+		log.Println("写入文档正式表失败，可能表损坏或磁盘满了")
+		return
+	}
+	w.DB.Delete(archiveDraft)
+	// 更新文档计数
+	// 如果文档数量大于100万，则不自动计数
+	totalArchive := w.GetExplainCount("SELECT id FROM archives")
+	if totalArchive < 1000000 {
+		w.UpdateCategoryArchiveCount(archiveDraft.CategoryId)
+	}
+
+	_ = w.SuccessReleaseArchive(&archiveDraft.Archive, true)
+}
+
+// CleanArchives 计划任务删除存档，30天前被删除的
+func (w *Website) CleanArchives() {
+	if w.DB == nil {
+		return
+	}
+	var drafts []model.ArchiveDraft
+	w.DB.Model(&model.ArchiveDraft{}).Unscoped().Where("`status` = ? AND `updated_time` < ?", config.ContentStatusDelete, time.Now().AddDate(0, 0, -30)).Find(&drafts)
+	if len(drafts) > 0 {
+		modules := w.GetCacheModules()
+		var mapModules = map[uint]model.Module{}
+		for _, v := range modules {
+			mapModules[v.Id] = v
+		}
+		for _, draft := range drafts {
+			w.DB.Unscoped().Where("id = ?", draft.Id).Delete(model.ArchiveData{})
+			if module, ok := mapModules[draft.ModuleId]; ok {
+				w.DB.Unscoped().Where("id = ?", draft.Id).Delete(module.TableName)
+			}
+			w.DB.Unscoped().Where("id = ?", draft.Id).Delete(model.ArchiveDraft{})
+		}
+	}
+}
+
+// VerifyArchiveUrlToken token增加a标记：token-a-id
+func (w *Website) VerifyArchiveUrlToken(urlToken, title string, id int64) string {
+	newToken := false
+	if urlToken == "" {
+		urlToken = library.GetPinyin(title, w.Content.UrlTokenType == config.UrlTokenTypeSort)
+		if len(urlToken) > 100 {
+			urlToken = urlToken[:100]
+			idx := strings.LastIndex(urlToken, "-")
+			if idx > 0 {
+				urlToken = urlToken[:idx]
+			}
+		}
+		if id > 0 {
+			// 判断archive
+			tmpArc, err := w.GetArchiveByUrlToken(urlToken)
+			if err == nil && tmpArc.Id != id {
+				urlToken += "-a" + strconv.FormatInt(id, 10)
+				return urlToken
+			}
+			// 判断archiveDraft
+			tmpDraft, err := w.GetArchiveDraftByUrlToken(urlToken)
+			if err == nil && tmpDraft.Id != id {
+				urlToken += "-a" + strconv.FormatInt(id, 10)
+				return urlToken
+			}
+		}
+		// 如果id=0，则在beforeCreate 中添加后缀
+		newToken = true
+	}
+	if newToken == false {
+		urlToken = strings.ToLower(library.ParseUrlToken(urlToken))
+		// 防止超出长度
+		if len(urlToken) > 100 {
+			urlToken = urlToken[:100]
+			idx := strings.LastIndex(urlToken, "-")
+			if idx > 0 {
+				urlToken = urlToken[:idx]
+			}
+		}
+		index := 0
+		for {
+			tmpToken := urlToken
+			if index > 0 {
+				tmpToken = urlToken + "-" + strconv.Itoa(index)
+			}
+			// 判断分类
+			_, err := w.GetCategoryByUrlToken(tmpToken)
+			if err == nil {
+				index++
+				continue
+			}
+			// 判断archive
+			tmpArc, err := w.GetArchiveByUrlToken(tmpToken)
+			if err == nil && tmpArc.Id != id {
+				index++
+				continue
+			}
+			// 判断archiveDraft
+			tmpDraft, err := w.GetArchiveDraftByUrlToken(tmpToken)
+			if err == nil && tmpDraft.Id != id {
+				index++
+				continue
+			}
+			urlToken = tmpToken
+			break
+		}
+	}
+
+	return urlToken
+}
+
+func (w *Website) CheckArchiveHasOrder(userId uint, archive *model.Archive, userGroup *model.UserGroup) *model.Archive {
+	if archive.Price == 0 && archive.ReadLevel == 0 {
+		archive.HasOrdered = true
+	}
+	if userId > 0 {
+		if archive.UserId == userId {
+			archive.HasOrdered = true
+		} else if archive.Price > 0 {
+			var exist int64
+			w.DB.WithContext(w.Ctx()).Table("`orders` as o").Joins("INNER JOIN `order_details` as d ON o.order_id = d.order_id AND d.`goods_id` = ?", archive.Id).Where("o.user_id = ? AND o.`status` IN(?)", userId, []int{
+				config.OrderStatusPaid,
+				config.OrderStatusDelivering,
+				config.OrderStatusCompleted}).Count(&exist)
+			if exist > 0 {
+				archive.HasOrdered = true
+			} else {
+				archive.HasOrdered = false
+			}
+		}
+		if archive.ReadLevel > 0 && !archive.HasOrdered {
+			if userGroup != nil && userGroup.Level >= archive.ReadLevel {
+				archive.HasOrdered = true
+			}
+		}
+	}
+
+	return archive
+}
+
+func (w *Website) UpgradeMultiCategory() {
+	type tinyArchive struct {
+		Id         int64 `json:"id"`
+		CategoryId uint  `json:"category_id"`
+	}
+	var lastId int64 = 0
+	for {
+		// 变量别叫 archives：这里只需要 id/category_id，用 Scan 取窄结构没问题，
+		// 但同名变量会让「禁止 Scan 取 model.Archive」的护栏误报。
+		var tinyArchives []*tinyArchive
+		w.DB.Model(&model.Archive{}).Where("`id` > ?", lastId).Order("id asc").Limit(1000).Scan(&tinyArchives)
+		if len(tinyArchives) == 0 {
+			break
+		}
+		lastId = tinyArchives[len(tinyArchives)-1].Id
+		for _, arc := range tinyArchives {
+			arcCategory := model.ArchiveCategory{
+				CategoryId: arc.CategoryId,
+				ArchiveId:  arc.Id,
+			}
+			w.DB.Model(&model.ArchiveCategory{}).Where("`archive_id` = ? and `category_id` = ?", arc.Id, arc.CategoryId).FirstOrCreate(&arcCategory)
+		}
+	}
+}
+
+func (w *Website) GetArchiveFlags(archiveId int64) string {
+	var flags []string
+	w.DB.WithContext(w.Ctx()).Model(&model.ArchiveFlag{}).Where("`archive_id` = ?", archiveId).Pluck("flag", &flags)
+
+	return strings.Join(flags, ",")
+}
+
+func (w *Website) SaveArchiveFlags(archiveId int64, flags []string) error {
+	if len(flags) == 0 {
+		w.DB.Where("`archive_id` = ?", archiveId).Delete(&model.ArchiveFlag{})
+		return nil
+	}
+	for _, flag := range flags {
+		arcFlag := model.ArchiveFlag{
+			Flag:      flag,
+			ArchiveId: archiveId,
+		}
+		w.DB.Model(&model.ArchiveFlag{}).Where("`archive_id` = ? and `flag` = ?", arcFlag.ArchiveId, arcFlag.Flag).FirstOrCreate(&arcFlag)
+	}
+	// 删除额外的
+	w.DB.Unscoped().Where("`archive_id` = ? and `flag` NOT IN (?)", archiveId, flags).Delete(&model.ArchiveFlag{})
+
+	return nil
+}
+
+func (w *Website) SaveArchiveCategories(archiveId int64, categoryIds []uint) error {
+	if len(categoryIds) == 0 {
+		w.DB.Where("`archive_id` = ?", archiveId).Delete(&model.ArchiveCategory{})
+		return nil
+	}
+	// 如果文档数量大于100万，则不自动计数
+	totalArchive := w.GetExplainCount("SELECT id FROM archives")
+	for _, catId := range categoryIds {
+		arcCategory := model.ArchiveCategory{
+			CategoryId: catId,
+			ArchiveId:  archiveId,
+		}
+		w.DB.Model(&model.ArchiveCategory{}).Where("`archive_id` = ? and `category_id` = ?", archiveId, catId).FirstOrCreate(&arcCategory)
+		// 更新文档计数
+		if totalArchive < 1000000 {
+			w.UpdateCategoryArchiveCount(catId)
+		}
+	}
+	// 删除额外的
+	var archiveCategories []*model.ArchiveCategory
+	w.DB.Unscoped().Where("`archive_id` = ? and `category_id` NOT IN (?)", archiveId, categoryIds).Find(&archiveCategories)
+	if len(archiveCategories) > 0 {
+		for _, v := range archiveCategories {
+			w.DB.Unscoped().Model(v).Delete(&model.ArchiveCategory{})
+			if totalArchive < 1000000 {
+				w.UpdateCategoryArchiveCount(v.CategoryId)
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetArchiveRelations 仅返回正式的文档
+func (w *Website) GetArchiveRelations(archiveId int64) []*model.Archive {
+	var relations []*model.Archive
+	var relationIds []int64
+	w.DB.WithContext(w.Ctx()).Model(&model.ArchiveRelation{}).Group("relation_id").Where("`archive_id` = ?", archiveId).Pluck("relation_id", &relationIds)
+	if len(relationIds) > 0 {
+		w.DB.WithContext(w.Ctx()).Model(&model.Archive{}).Where("`id` IN (?)", relationIds).Find(&relations)
+		for i := range relations {
+			relations[i].GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(relations[i].Id)))
+			relations[i].Link = w.GetUrl("archive", relations[i], 0)
+		}
+		return relations
+	}
+
+	return nil
+}
+
+func (w *Website) SaveArchiveRelations(archiveId int64, relationIds []int64) error {
+	if len(relationIds) == 0 {
+		w.DB.Where("`archive_id` = ?", archiveId).Delete(&model.ArchiveRelation{})
+		return nil
+	}
+	for _, rid := range relationIds {
+		arcRelation := model.ArchiveRelation{
+			ArchiveId:  archiveId,
+			RelationId: rid,
+		}
+		w.DB.Model(&model.ArchiveRelation{}).Where("`archive_id` = ? and `relation_id` = ?", archiveId, rid).FirstOrCreate(&arcRelation)
+	}
+	// 删除额外的
+	w.DB.Unscoped().Where("`archive_id` = ? and `relation_id` NOT IN (?)", archiveId, relationIds).Delete(&model.ArchiveRelation{})
+
+	return nil
+}
+
+func (w *Website) SaveArchiveOptions(archive *model.ArchiveDraft, options []*request.ArchiveOption, archiveSkus []*request.ArchiveSku) error {
+	archiveId := archive.Id
+	if len(options) == 0 || archive.OptionType == config.OptionTypeNone {
+		w.DB.Where("`archive_id` = ?", archiveId).Delete(&model.ArchiveOption{})
+		w.DB.Where("`archive_id` = ?", archiveId).Delete(&model.ArchiveOptionValue{})
+		return nil
+	}
+	if archive.OptionType == config.OptionTypePrice {
+		w.DB.Where("archive_id = ?", archiveId).Delete(&model.ArchiveSku{})
+	}
+	var valuesMap = map[string][]model.ArchiveOptionValue{}
+	var optionIds []int64
+	var optionStocks int64
+	for i, option := range options {
+		archiveOption := model.ArchiveOption{
+			ArchiveId:   archiveId,
+			IsMain:      option.IsMain,
+			Title:       option.Title,
+			IsAttribute: option.IsAttribute,
+			Sort:        uint(i + 1),
+		}
+		var existOption model.ArchiveOption
+		err := w.DB.Model(&model.ArchiveOption{}).Where("`archive_id` = ? and `title` = ?", archiveOption.ArchiveId, archiveOption.Title).Take(&existOption).Error
+		if err == nil {
+			existOption.IsMain = archiveOption.IsMain
+			existOption.Sort = archiveOption.Sort
+			existOption.IsAttribute = archiveOption.IsAttribute
+			w.DB.Model(&model.ArchiveOption{}).Where("`id` = ?", existOption.Id).Save(&existOption)
+			archiveOption.Id = existOption.Id
+		} else {
+			w.DB.Save(&archiveOption)
+		}
+		options[i].Id = archiveOption.Id
+		optionIds = append(optionIds, archiveOption.Id)
+		var optionValueIds []int64
+		for j, value := range option.Values {
+			if value.Stock > optionStocks {
+				optionStocks = value.Stock
+			}
+			archiveOptionValue := model.ArchiveOptionValue{
+				ArchiveId: archiveId,
+				OptionId:  archiveOption.Id,
+				Title:     value.Title,
+				Images:    value.Images,
+				Color:     value.Color,
+				Price:     value.Price,
+				Stock:     value.Stock,
+				IsDefault: value.IsDefault,
+				Sort:      uint(j + 1),
+			}
+			var existValue model.ArchiveOptionValue
+			err = w.DB.Model(&model.ArchiveOptionValue{}).Where("archive_id = ? and option_id = ? and title = ?", archiveOptionValue.ArchiveId, archiveOptionValue.OptionId, value.Title).Take(&existValue).Error
+			if err == nil {
+				existValue.Images = archiveOptionValue.Images
+				existValue.Color = archiveOptionValue.Color
+				existValue.Price = archiveOptionValue.Price
+				existValue.Stock = archiveOptionValue.Stock
+				existValue.Sort = archiveOptionValue.Sort
+				existValue.IsDefault = archiveOptionValue.IsDefault
+				w.DB.Model(&model.ArchiveOptionValue{}).Where("id = ?", existValue.Id).Save(&existValue)
+				archiveOptionValue.Id = existValue.Id
+			} else {
+				w.DB.Save(&archiveOptionValue)
+			}
+			options[i].Values[j].Id = archiveOptionValue.Id
+			optionValueIds = append(optionValueIds, archiveOptionValue.Id)
+			archiveOptionValue.OptionTitle = archiveOption.Title
+			valuesMap[archiveOption.Title] = append(valuesMap[archiveOption.Title], archiveOptionValue)
+		}
+		w.DB.Where("archive_id = ? and option_id = ? and id not in(?)", archiveId, archiveOption.Id, optionValueIds).Delete(&model.ArchiveOptionValue{})
+	}
+	w.DB.Where("archive_id = ? and id not in(?)", archiveId, optionIds).Delete(&model.ArchiveOption{})
+	// 写入sku
+	var skuIds []int64
+	var minPrice int64
+	var totalStock int64
+	for _, archiveSku := range archiveSkus {
+		var skuValues []model.ArchiveOptionValue
+		var skuSymbols []string
+		var valueNames []string
+		for _, opt := range archiveSku.Values {
+			if opt.OptionTitle == "" && opt.OptionId > 0 {
+				for _, tmp := range options {
+					if tmp.Id == opt.OptionId {
+						opt.OptionTitle = tmp.Title
+						break
+					}
+				}
+			}
+			var valueItem model.ArchiveOptionValue
+			subValues, ok := valuesMap[opt.OptionTitle]
+			if ok {
+				for j := range subValues {
+					if subValues[j].Title == opt.Title {
+						valueItem = subValues[j]
+						skuValues = append(skuValues, valueItem)
+						break
+					}
+				}
+			} else {
+				// 出错？
+				log.Printf("获取不到Option ？ opt = %v", opt)
+			}
+			skuSymbols = append(skuSymbols, strconv.FormatInt(valueItem.Id, 10))
+			tmpName := library.GetPinyin(valueItem.Title, w.Content.UrlTokenType == config.UrlTokenTypeSort)
+			if len(tmpName) > 20 {
+				tmpName = tmpName[:20]
+			}
+			valueNames = append(valueNames, tmpName)
+			// if archiveSku.Logo == "" && valuesMap[opt.Title].Logo != "" {
+			// 	archiveSku.Logo = valuesMap[opt.Title].Logo
+			// }
+		}
+		symbol := strings.Join(skuSymbols, "-")
+		if archiveSku.Sku == "" {
+			archiveSku.Sku = symbol
+		}
+		urlToken := strings.Join(valueNames, " ")
+		if len(urlToken) > 150 {
+			urlToken = urlToken[:150]
+		}
+		archiveSku.UrlToken = archive.UrlToken + "-" + urlToken
+		if len(archiveSku.UrlToken) > 190 {
+			urlTokenLen := len(urlToken)
+			archiveSku.UrlToken = archive.UrlToken[:188-urlTokenLen] + urlToken
+		}
+		totalStock += archiveSku.Stock
+		if minPrice == 0 || (archiveSku.Price > 0 && archiveSku.Price < minPrice) {
+			minPrice = archiveSku.Price
+		}
+		sku := model.ArchiveSku{
+			Id:          archiveSku.Id,
+			ArchiveId:   archiveId,
+			Title:       archiveSku.Title,
+			UrlToken:    archiveSku.UrlToken,
+			Symbol:      symbol,
+			Sku:         archiveSku.Sku,
+			Barcode:     archiveSku.Barcode,
+			HsCode:      archiveSku.HsCode,
+			Images:      archiveSku.Images,
+			Stock:       archiveSku.Stock,
+			Price:       archiveSku.Price,
+			OriginPrice: archiveSku.OriginPrice,
+			CostPrice:   archiveSku.CostPrice,
+			Weight:      archiveSku.Weight,
+			WeightUnit:  archiveSku.WeightUnit,
+			Length:      archiveSku.Length,
+			Width:       archiveSku.Width,
+			Height:      archiveSku.Height,
+			Volume:      archiveSku.Volume,
+			LengthUnit:  archiveSku.LengthUnit,
+			Values:      skuValues,
+			Status:      archiveSku.Status,
+		}
+		if sku.Id > 0 {
+			var exist model.ArchiveSku
+			w.DB.Where("archive_id = ? AND id = ?", archiveId, sku.Id).First(&exist)
+			if exist.Id > 0 {
+				exist.Title = sku.Title
+				exist.Symbol = sku.Symbol
+				exist.Sku = sku.Sku
+				exist.Barcode = sku.Barcode
+				exist.HsCode = sku.HsCode
+				exist.Images = sku.Images
+				exist.Stock = sku.Stock
+				exist.Price = sku.Price
+				exist.CostPrice = sku.CostPrice
+				exist.OriginPrice = sku.OriginPrice
+				exist.Weight = sku.Weight
+				exist.WeightUnit = sku.WeightUnit
+				exist.Length = sku.Length
+				exist.Width = sku.Width
+				exist.Height = sku.Height
+				exist.Volume = sku.Volume
+				exist.LengthUnit = sku.LengthUnit
+				exist.Values = skuValues
+				exist.Status = sku.Status
+				w.DB.Model(&model.ArchiveSku{}).Where("id = ?", exist.Id).Save(&exist)
+			} else {
+				sku.Id = 0
+				w.DB.Save(&sku)
+			}
+		} else {
+			w.DB.Save(&sku)
+		}
+		skuIds = append(skuIds, sku.Id)
+	}
+	if archive.OptionType == config.OptionTypePrice {
+		minPrice = archive.Price
+		totalStock = archive.Stock
+		if optionStocks > totalStock {
+			totalStock = optionStocks
+		}
+	}
+	w.DB.Model(&model.Archive{}).Where("id = ?", archiveId).UpdateColumns(map[string]interface{}{
+		"stock": totalStock,
+		"price": minPrice,
+	})
+	w.DB.Where("archive_id = ? and id not in (?)", archiveId, skuIds).Delete(&model.ArchiveSku{})
+
+	return nil
+}
+
+func (w *Website) SaveArchiveWholesaleRules(archiveId int64, rules []*request.WholesaleRule) error {
+	if len(rules) == 0 {
+		w.DB.Where("archive_id = ?", archiveId).Delete(&model.WholesaleRule{})
+		return nil
+	}
+	var ruleIds []int64
+	for _, rule := range rules {
+		var exist model.WholesaleRule
+		if rule.Id > 0 {
+			w.DB.Where("id = ?", rule.Id).First(&exist)
+			if exist.Id > 0 && exist.ArchiveId != archiveId {
+				// 排除这个id
+				exist = model.WholesaleRule{}
+			}
+		}
+		exist.ArchiveId = archiveId
+		exist.MinQuantity = rule.MinQuantity
+		exist.MaxQuantity = rule.MaxQuantity
+		exist.DiscountRate = rule.DiscountRate
+
+		w.DB.Save(&exist)
+		ruleIds = append(ruleIds, exist.Id)
+	}
+	w.DB.Where("archive_id = ?", archiveId).Where("id not in (?)", ruleIds).Delete(&model.WholesaleRule{})
+
+	return nil
+}
+
+func (w *Website) GetArchiveOptions(archiveId int64) ([]*model.ArchiveOption, error) {
+	var options []*model.ArchiveOption
+	if err := w.DB.Where("archive_id = ?", archiveId).Find(&options).Error; err != nil {
+		return nil, err
+	}
+	var values []model.ArchiveOptionValue
+	if err := w.DB.Where("archive_id = ?", archiveId).Find(&values).Error; err != nil {
+		return nil, err
+	}
+	for _, option := range options {
+		for _, value := range values {
+			if option.Id == value.OptionId {
+				value.Thumb = value.GetThumb(w.PluginStorage.StorageUrl, w.Content.DefaultThumb)
+				option.Values = append(option.Values, value)
+			}
+		}
+	}
+
+	return options, nil
+}
+
+func (w *Website) GetArchiveOption(archiveId int64, optionId int64) (*model.ArchiveOption, error) {
+	var option model.ArchiveOption
+	if err := w.DB.Where("archive_id = ? AND id = ?", archiveId, optionId).First(&option).Error; err != nil {
+		return nil, err
+	}
+	return &option, nil
+}
+
+func (w *Website) GetArchiveOptionValue(archiveId int64, optionValueId int64) (*model.ArchiveOptionValue, error) {
+	var optionValue model.ArchiveOptionValue
+	if err := w.DB.Where("archive_id = ? AND id = ?", archiveId, optionValueId).First(&optionValue).Error; err != nil {
+		return nil, err
+	}
+	return &optionValue, nil
+}
+
+func (w *Website) GetArchiveSkus(archiveId int64) ([]*model.ArchiveSku, error) {
+	var skus []*model.ArchiveSku
+	if err := w.DB.Where("archive_id = ?", archiveId).Find(&skus).Error; err != nil {
+		return nil, err
+	}
+	for _, sku := range skus {
+		sku.Thumb = sku.GetThumb(w.PluginStorage.StorageUrl, w.Content.DefaultThumb)
+	}
+
+	return skus, nil
+}
+
+func (w *Website) GetArchiveWholesaleRules(archiveId int64) ([]*model.WholesaleRule, error) {
+	var rules []*model.WholesaleRule
+	if err := w.DB.Where("archive_id = ?", archiveId).Find(&rules).Error; err != nil {
+		return nil, err
+	}
+
+	return rules, nil
+}
+
+type QuickImportArchive struct {
+	Total      int  `json:"total"`
+	Finished   int  `json:"finished"`
+	IsFinished bool `json:"is_finished"`
+	Succeed    int  `json:"succeed"`
+	DailyCount int  `json:"daily_count"` // 每天发布数量
+	w          *Website
+	PlanType   int `json:"plan_type"`  // 发布类型，0 = 发布到正式文章，1 = 发布到草稿箱，2 = 发布到草稿箱并定时发布
+	PlanStart  int `json:"plan_start"` // 计划开始时间 0 立即 1 跟随最后一篇 2 半小时 3 1小时 4 2小时 5 4小时 6 8小时 7 12小时 8 24小时
+	Days       int `json:"days"`       // 分成多少天发布
+
+	FileName        string `json:"file_name"`
+	Size            int64  `json:"size"` // 文件大小
+	Md5             string `json:"md5"`
+	Chunk           int    `json:"chunk"`
+	Chunks          int    `json:"chunks"`
+	CategoryId      uint   `json:"category_id"`
+	TitleType       int    `json:"title_type"`
+	CheckDuplicate  bool   `json:"check_duplicate"` // 是否检查重复标题
+	Message         string `json:"message"`
+	InsertImage     int    `json:"insert_image"` // 0 不插入，1不插入，2 自定义插入图片 3 从图片分类里插入
+	ImageCategoryId int    `json:"image_category_id"`
+
+	images    []*response.TinyAttachment
+	nextImage int
+
+	current   time.Time
+	between   time.Duration
+	curDayNum int
+}
+
+func (w *Website) NewQuickImportArchive(req *request.QuickImportArchiveRequest) (*QuickImportArchive, error) {
+	if w.quickImportStatus != nil && w.quickImportStatus.IsFinished == false {
+		return nil, errors.New(w.Tr("prevTaskIsRunning"))
+	}
+	var images = make([]*response.TinyAttachment, 0, len(req.Images))
+	if req.InsertImage == config.CollectImageInsert {
+		for _, image := range req.Images {
+			images = append(images, &response.TinyAttachment{
+				FileName:     filepath.Base(image),
+				FileLocation: image,
+			})
+		}
+	}
+	w.quickImportStatus = &QuickImportArchive{
+		w:               w,
+		FileName:        req.FileName,
+		Md5:             req.Md5,
+		Chunks:          req.Chunks,
+		Chunk:           req.Chunk,
+		CategoryId:      req.CategoryId,
+		TitleType:       req.TitleType,
+		Size:            req.Size,
+		PlanType:        req.PlanType,
+		PlanStart:       req.PlanStart,
+		Days:            req.Days,
+		CheckDuplicate:  req.CheckDuplicate,
+		InsertImage:     req.InsertImage,
+		ImageCategoryId: req.ImageCategoryId,
+		images:          images,
+		nextImage:       0,
+	}
+
+	return w.quickImportStatus, nil
+}
+
+func (w *Website) GetQuickImportStatus() *QuickImportArchive {
+	if w.quickImportStatus != nil && w.quickImportStatus.IsFinished {
+		time.AfterFunc(500*time.Millisecond, func() {
+			w.quickImportStatus = nil
+		})
+		return nil
+	}
+	return w.quickImportStatus
+}
+
+func (qia *QuickImportArchive) setCurrentTime() {
+	// // 计划开始时间 0 立即 1 跟随最后一篇 2 半小时 3 1小时 4 2小时 5 4小时 6 8小时 7 12小时 8 24小时，9 3天 10 7天 11 1个月 12 6个月 13 1年
+	if qia.PlanStart == 2 {
+		qia.current = qia.current.Add(30 * time.Minute)
+	} else if qia.PlanStart == 3 {
+		qia.current = qia.current.Add(60 * time.Minute)
+	} else if qia.PlanStart == 4 {
+		qia.current = qia.current.Add(2 * time.Hour)
+	} else if qia.PlanStart == 5 {
+		qia.current = qia.current.Add(4 * time.Hour)
+	} else if qia.PlanStart == 6 {
+		qia.current = qia.current.Add(8 * time.Hour)
+	} else if qia.PlanStart == 7 {
+		qia.current = qia.current.Add(12 * time.Hour)
+	} else if qia.PlanStart == 8 {
+		qia.current = qia.current.Add(24 * time.Hour)
+	} else if qia.PlanStart == 9 {
+		qia.current = qia.current.AddDate(0, 0, 3)
+	} else if qia.PlanStart == 10 {
+		qia.current = qia.current.AddDate(0, 0, 7)
+	} else if qia.PlanStart == 11 {
+		qia.current = qia.current.AddDate(0, 1, 0)
+	} else if qia.PlanStart == 12 {
+		qia.current = qia.current.AddDate(0, 6, 0)
+	} else if qia.PlanStart == 13 {
+		qia.current = qia.current.AddDate(1, 0, 0)
+	} else if qia.PlanStart == 1 {
+		// start follow last
+		var lastArchive model.ArchiveDraft
+		qia.w.DB.Model(&model.ArchiveDraft{}).Last(&lastArchive)
+		if lastArchive.CreatedTime > qia.current.Unix() {
+			qia.current = time.Unix(lastArchive.CreatedTime, 0).Add(qia.between)
+		}
+	}
+}
+
+func (qia *QuickImportArchive) Start(file multipart.File) error {
+	defer func() {
+		qia.IsFinished = true
+		_ = file.Close()
+	}()
+
+	if strings.HasSuffix(qia.FileName, ".xlsx") {
+		// xlsx
+		return qia.startExcel(file)
+	} else {
+		// zip
+		return qia.startZip(file)
+	}
+}
+
+func (qia *QuickImportArchive) startZip(file multipart.File) error {
+	category, err := qia.w.GetCategoryById(qia.CategoryId)
+	if err != nil {
+		qia.Message = err.Error()
+		return err
+	}
+	// 解压zip
+	zipReader, err := zip.NewReader(file, qia.Size)
+	if err != nil {
+		qia.Message = err.Error()
+		return err
+	}
+
+	// 读取图片
+	if qia.InsertImage == config.CollectImageCategory {
+		qia.images = qia.w.GetCategoryImages(qia.ImageCategoryId)
+	}
+
+	qia.Total = len(zipReader.File)
+	qia.between = 0
+	qia.current = time.Now()
+	if qia.PlanType == 2 {
+		qia.DailyCount = int(math.Ceil(float64(qia.Total) / float64(qia.Days)))
+		qia.between = time.Hour * 24 / time.Duration(qia.DailyCount)
+		if qia.PlanStart > 0 {
+			qia.setCurrentTime()
+		}
+	}
+
+	frontUrl := qia.w.System.BaseUrl
+	if qia.w.System.FrontUrl != "" {
+		frontUrl = qia.w.System.FrontUrl
+	}
+	// zip里可能有图片，支持图片引用
+	// 先遍历收集图片
+	var zipImages = make(map[string]string)
+	for _, f := range zipReader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		fname := f.FileInfo().Name()
+		// . 开头的文件忽略
+		if strings.HasPrefix(fname, ".") {
+			continue
+		}
+		fileExt := strings.ToLower(filepath.Ext(fname))
+		if fileExt == ".jpeg" {
+			fileExt = ".jpg"
+		}
+		if fileExt == ".ico" || fileExt == ".bmp" {
+			fileExt = ".png"
+		}
+		isImage := false
+		if fileExt == ".jpg" || fileExt == ".png" || fileExt == ".gif" || fileExt == ".webp" || fileExt == ".avif" || fileExt == ".tiff" {
+			isImage = true
+		}
+		if isImage {
+			reader, err := f.Open()
+			if err != nil {
+				qia.Message = err.Error()
+				continue
+			}
+			qia.Message = "Collecting image: " + fname
+			content, err := io.ReadAll(reader)
+			_ = reader.Close()
+			attachment, err := qia.w.SaveAttachmentFromBytes(content, fname, 0)
+			if err != nil {
+				slog.Warn("Save attachment error: " + err.Error() + " file: " + f.Name)
+				qia.Message = f.Name + " -> error:" + err.Error()
+				continue
+			} else {
+				slog.Info("Save attachment success: " + attachment.FileLocation + " file: " + f.Name)
+
+				qia.Message = "Saved: " + attachment.FileLocation
+				qia.Succeed++
+			}
+			// 获取到图片地址
+			zipImages[f.Name] = attachment.Logo
+		}
+	}
+	var archives = make([]model.ArchiveDraft, 0, 2000)
+	for _, f := range zipReader.File {
+		qia.Finished++
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		// . 开头的文件忽略
+		if strings.HasPrefix(f.FileInfo().Name(), ".") {
+			continue
+		}
+		reader, err := f.Open()
+		if err != nil {
+			qia.Message = err.Error()
+			continue
+		}
+		content, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			qia.Message = err.Error()
+			continue
+		}
+		if f.Flags&0x0800 == 0 && !utf8.Valid([]byte(f.Name)) {
+			// 还有可能是flags搞错了
+			gbkName, err := simplifiedchinese.GBK.NewDecoder().String(f.Name)
+			if err == nil {
+				f.Name = gbkName
+			}
+		}
+		qia.Message = "Collecting: " + f.Name
+		fileExt := filepath.Ext(f.Name)
+		slog.Info("Collecting", "file", f.Name, "ext", fileExt)
+		// 支持 txt/html/md
+		status := config.ContentStatusOK
+		if qia.PlanType == 2 {
+			status = config.ContentStatusPlan
+		} else if qia.PlanType == 1 {
+			status = config.ContentStatusDraft
+		}
+		archive := model.ArchiveDraft{
+			Archive: model.Archive{
+				Title:       strings.TrimSuffix(filepath.Base(f.Name), fileExt),
+				CreatedTime: qia.current.Unix(),
+				UpdatedTime: time.Now().Unix(),
+				CategoryId:  category.Id,
+				ModuleId:    category.ModuleId,
+			},
+			Status: uint(status),
+		}
+		var articleContent string
+		if fileExt == ".html" {
+			// 检查content是否是utf8
+			if !utf8.Valid(content) {
+				tmpContent, err := simplifiedchinese.GBK.NewDecoder().Bytes(content)
+				if err == nil {
+					content = tmpContent
+				}
+			}
+			re, _ := regexp.Compile(`<title.*?>(.+?)</title>`)
+			match := re.Match(content)
+			if match {
+				// 普通html文档，需要解析
+				arc := &request.Archive{
+					OriginUrl:   "",
+					ContentText: string(content),
+				}
+				err = qia.w.ParseArticleDetail(arc)
+				if err != nil {
+					qia.Message = err.Error()
+					// html文档解析失败
+					continue
+				}
+				if qia.TitleType == 1 && arc.Title != "" {
+					archive.Title = arc.Title
+				}
+				articleContent = arc.Content
+			} else {
+				if qia.TitleType == 1 {
+					contents := bytes.Split(content, []byte{'\n'})
+					if len(contents) > 1 {
+						archive.Title = string(contents[0])
+						content = bytes.Join(contents[1:], []byte{'\n'})
+					}
+				}
+				articleContent = string(content)
+			}
+		} else if fileExt == ".md" || fileExt == ".txt" {
+			// 检查content是否是utf8
+			if !utf8.Valid(content) {
+				tmpContent, err := simplifiedchinese.GBK.NewDecoder().Bytes(content)
+				if err == nil {
+					content = tmpContent
+				}
+			}
+			if len(content) == 0 {
+				continue
+			}
+			// 支持 frontmatter（YAML），格式：
+			// ---
+			// title: 标题
+			// keywords: 关键词
+			// ...
+			// ---
+			// 正文内容
+			fmBody := content
+			if hasArchiveFrontmatter(content) {
+				fm, body, ok := parseArchiveFrontmatter(content)
+				if ok {
+					fmBody = body
+					qia.w.applyArchiveFrontmatter(&archive, fm)
+				}
+			}
+			content = fmBody
+			if bytes.HasPrefix(content, []byte("#")) || qia.TitleType == 1 {
+				// 第一行是标题
+				contents := bytes.Split(content, []byte{'\n'})
+				if len(contents) > 1 {
+					archive.Title = strings.Trim(string(contents[0]), "# *")
+					content = bytes.Join(contents[1:], []byte{'\n'})
+				}
+			}
+
+			articleContent = strings.TrimSpace(string(content))
+			if (fileExt == ".md" || content[0] != '<') && qia.w.Content.Editor != "markdown" {
+				articleContent = library.MarkdownToHTML(articleContent, frontUrl, qia.w.Content.FilterOutlink)
+			}
+		} else if fileExt == ".xlsx" {
+			// reader 已经关闭，因此需要重新开启一个
+			xlsReader := bytes.NewReader(content)
+			err = qia.startExcel(xlsReader)
+			slog.Info("Start excel: "+f.Name, "error", err)
+			if err != nil {
+				qia.Message = err.Error()
+			}
+			continue
+		} else {
+			// 不支持的文件类型，也跳过
+			continue
+		}
+		// 支持在标题中添加#分类名称#来快速创建分类
+		re, _ := regexp.Compile(`\[?#([\s\S]+?)#]?`)
+		match := re.FindStringSubmatch(archive.Title)
+		if len(match) > 1 {
+			categoryTitle := match[1]
+			archive.Title = strings.Replace(archive.Title, match[0], "", 1)
+			if categoryTitle != "" {
+				tmpCategory, err := qia.w.GetCategoryByTitle(categoryTitle)
+				if err != nil {
+					// 分类不存在，创建
+					tmpCategory, _ = qia.w.SaveCategory(&request.Category{
+						Title:    categoryTitle,
+						ModuleId: category.ModuleId,
+						ParentId: library.Ptr(category.Id),
+						Status:   library.Ptr(uint(1)),
+						Type:     config.CategoryTypeArchive,
+					})
+				}
+				if tmpCategory != nil {
+					archive.CategoryId = tmpCategory.Id
+				}
+			}
+		}
+		// 检查标题重复问题
+		if qia.CheckDuplicate {
+			var count int64
+			qia.w.DB.Model(&model.Archive{}).Where("title = ?", archive.Title).Count(&count)
+			if count > 0 {
+				continue
+			}
+			qia.w.DB.Model(&model.ArchiveDraft{}).Where("title = ?", archive.Title).Count(&count)
+			if count > 0 {
+				continue
+			}
+		}
+		// 步进
+		if qia.between > 0 {
+			qia.current = qia.current.Add(qia.between)
+		}
+		// e
+		// 处理 articleContent，如果存在 zipImages， 并且 articleContent 有对 zipImages 的图片引用，则替换成服务端地址
+		if len(zipImages) > 0 {
+			articleContent = qia.replaceZipImages(articleContent, f.Name, zipImages)
+		}
+
+		// 插入图片
+		if len(qia.images) > 0 {
+			var img string
+			if qia.ImageCategoryId == -2 {
+				// 按关键词匹配
+				keywordSplit := WordSplit(archive.Title, false)
+				for _, word := range keywordSplit {
+					if img != "" {
+						break
+					}
+					for _, v := range qia.images {
+						if strings.Contains(v.FileName, word) {
+							img = v.FileLocation
+							break
+						}
+					}
+				}
+			} else {
+				// 随机一张，已经随机过了，因此这里就是顺序
+				img = qia.images[qia.nextImage].FileLocation
+				qia.nextImage = (qia.nextImage + 1) % len(qia.images)
+			}
+			if img != "" {
+				imgTag := "<img src='" + img + "' alt='" + archive.Title + "' />"
+
+				var contents = strings.Split(articleContent, "\n")
+				if len(contents) < 2 && strings.Contains(articleContent, ">") {
+					contents = strings.SplitAfter(articleContent, ">")
+				}
+				index := len(contents) / 3
+				contents = append(contents, "")
+				copy(contents[index+1:], contents[index:])
+				// ![新的图片](http://xxx/xxx.webp)
+				if qia.w.Content.Editor == "markdown" {
+					imgTag = fmt.Sprintf("![%s](%s)", archive.Title, img)
+				}
+				contents[index] = imgTag
+				articleContent = strings.Join(contents, "")
+				archive.Images = []string{img}
+			}
+		} else {
+			// 提取缩略图
+			re, _ := regexp.Compile(`(?i)<img.*?src=["'](.+?)["'].*?>`)
+			match := re.FindStringSubmatch(articleContent)
+			if len(match) > 1 {
+				archive.Images = append(archive.Images, match[1])
+			} else {
+				// 匹配Markdown ![新的图片](http://xxx/xxx.webp)
+				re, _ = regexp.Compile(`!\[([^]]*)\]\(([^)]+)\)`)
+				match = re.FindStringSubmatch(articleContent)
+				if len(match) > 2 {
+					archive.Images = append(archive.Images, match[2])
+				}
+			}
+		}
+		// 解析description
+		if archive.Description == "" {
+			archive.Description = library.ParseDescription(strings.ReplaceAll(library.StripTags(articleContent), "\n", " "), 250)
+		}
+		// 解析urlToken
+		if archive.UrlToken == "" {
+			archive.UrlToken = library.GetPinyin(archive.Title, true) + strconv.Itoa(int(archive.Id))
+		}
+		archive.ArchiveData = &model.ArchiveData{
+			Content: articleContent,
+		}
+		archives = append(archives, archive)
+		// 分批入库
+		if len(archives) >= 1000 {
+			qia.SaveBatches(archives)
+			archives = make([]model.ArchiveDraft, 0, 1000)
+			qia.Succeed += len(archives)
+		}
+	}
+	if len(archives) > 0 {
+		qia.SaveBatches(archives)
+	}
+	qia.IsFinished = true
+	// 生成LLMs.txt
+	go qia.w.ImmediateLLMsBuild()
+
+	return nil
+}
+
+// replaceZipImages 将 articleContent 中对 zip 内图片的引用替换为服务端地址。
+// zipImages 的 key 是图片在 zip 内相对根目录的路径（如 images/foo.jpg），
+// value 是已上传附件的服务端地址。articlePath 是当前文章在 zip 内的路径
+// （如 articles/article.md），用作解析正文里图片相对引用的基准。
+// 例如正文里 ![foo](../images/foo.jpg) 会归一化成 images/foo.jpg，再匹配 zipImages。
+func (qia *QuickImportArchive) replaceZipImages(content, articlePath string, zipImages map[string]string) string {
+	if len(zipImages) == 0 || content == "" {
+		return content
+	}
+	// 文章在 zip 内所在目录，用作解析相对图片引用的基准
+	// 例如 articlePath = "articles/article.md" -> baseDir = "articles"
+	baseDir := filepath.Dir(articlePath)
+	baseDir = strings.Trim(baseDir, "/")
+	if baseDir == "." {
+		baseDir = ""
+	}
+
+	// resolveImg 把一个图片引用地址归一化成 zip 根相对路径
+	// 仅处理相对引用（不以 http://、https://、//、data: 开头），其余原样返回空
+	resolveImg := func(src string) string {
+		src = strings.TrimSpace(src)
+		if src == "" {
+			return ""
+		}
+		// 跳过绝对 URL 和协议引用
+		lower := strings.ToLower(src)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") ||
+			strings.HasPrefix(lower, "//") || strings.HasPrefix(lower, "data:") {
+			return ""
+		}
+		// 去掉前后引号、空白
+		src = strings.Trim(src, "\"' \t\r\n")
+		// 以 / 开头的视为 zip 根绝对路径
+		var resolved string
+		if strings.HasPrefix(src, "/") {
+			resolved = strings.TrimPrefix(src, "/")
+		} else {
+			// 以文章所在目录为基准拼接并清理 .. 和 .
+			joined := src
+			if baseDir != "" {
+				joined = baseDir + "/" + src
+			}
+			resolved = cleanZipPath(joined)
+		}
+		return resolved
+	}
+
+	// 1) 处理 HTML <img src="..."> 引用
+	imgRe := regexp.MustCompile(`(?i)<img[^>]*\bsrc\s*=\s*["']([^"']+)["']`)
+	content = imgRe.ReplaceAllStringFunc(content, func(match string) string {
+		sub := imgRe.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		resolved := resolveImg(sub[1])
+		if resolved == "" {
+			return match
+		}
+		if logo, ok := zipImages[resolved]; ok {
+			return strings.Replace(match, sub[1], logo, 1)
+		}
+		return match
+	})
+
+	// 2) 处理 Markdown ![alt](src) 引用
+	mdRe := regexp.MustCompile(`!\[[^\]]*\]\(([^)]+)\)`)
+	content = mdRe.ReplaceAllStringFunc(content, func(match string) string {
+		sub := mdRe.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		resolved := resolveImg(sub[1])
+		if resolved == "" {
+			return match
+		}
+		if logo, ok := zipImages[resolved]; ok {
+			return strings.Replace(match, sub[1], logo, 1)
+		}
+		return match
+	})
+
+	return content
+}
+
+// cleanZipPath 清理 zip 内相对路径中的 ./ 和 ../ 段，返回 zip 根相对路径。
+// 例如 "articles/../images/foo.jpg" -> "images/foo.jpg"
+func cleanZipPath(p string) string {
+	p = strings.ReplaceAll(p, "\\", "/")
+	parts := strings.Split(p, "/")
+	stack := make([]string, 0, len(parts))
+	for _, seg := range parts {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || seg == "." {
+			continue
+		}
+		if seg == ".." {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		}
+		stack = append(stack, seg)
+	}
+	return strings.Join(stack, "/")
+}
+
+func (qia *QuickImportArchive) startExcel(file io.Reader) error {
+	category, err := qia.w.GetCategoryById(qia.CategoryId)
+	if err != nil {
+		qia.Message = err.Error()
+		return err
+	}
+	excelReader, err := excelize.OpenReader(file)
+	if err != nil {
+		qia.Message = err.Error()
+		return err
+	}
+	qia.Message = "Starting excel import..."
+	slog.Info("Starting excel import...")
+	// 读取图片
+	if qia.InsertImage == config.CollectImageCategory {
+		qia.images = qia.w.GetCategoryImages(qia.ImageCategoryId)
+	}
+	// 实际上，我们只处理第一个表
+	sheets := excelReader.GetSheetList()
+	sheetName := sheets[0]
+	rows, err := excelReader.GetRows(sheetName)
+	if err != nil {
+		qia.Message = err.Error()
+		return err
+	}
+	if len(rows) < 2 {
+		qia.Message = "Excel is empty"
+		slog.Info(qia.Message)
+		return errors.New(qia.Message)
+	}
+	// 确认字段，第一行为字段
+	// 根据分类，先读取出对应的模型以及字段
+	module := qia.w.GetModuleFromCache(category.ModuleId)
+	if module == nil {
+		qia.Message = "Module is empty"
+		slog.Info(qia.Message)
+		return errors.New(qia.Message)
+	}
+	var extraFields = make(map[string]int)
+	var existFields = make(map[string]int)
+	for i, col := range rows[0] {
+		// 匹配自定义字段
+		existExtra := false
+		if len(module.Fields) > 0 {
+			for _, field := range module.Fields {
+				if field.FieldName == col {
+					extraFields[field.FieldName] = i
+					existExtra = true
+					break
+				}
+			}
+		}
+		if !existExtra {
+			// 主表字段
+			existFields[col] = i
+		}
+	}
+	// 如果没有标题，则不允许插入
+	if _, ok := existFields["title"]; !ok {
+		qia.Message = "Title is empty"
+		slog.Info(qia.Message)
+		return errors.New(qia.Message)
+	}
+	qia.Message = fmt.Sprintf("Importing %v", existFields["title"])
+	slog.Info(qia.Message)
+	qia.Total = len(rows) - 1
+	qia.between = 0
+	qia.current = time.Now()
+	if qia.PlanType == 2 {
+		qia.DailyCount = int(math.Ceil(float64(qia.Total) / float64(qia.Days)))
+		qia.between = time.Hour * 24 / time.Duration(qia.DailyCount)
+		if qia.PlanStart > 0 {
+			qia.setCurrentTime()
+		}
+	}
+	baseHost := ""
+
+	frontUrl := qia.w.System.BaseUrl
+	if qia.w.System.FrontUrl != "" {
+		frontUrl = qia.w.System.FrontUrl
+	}
+	urls, err := url.Parse(frontUrl)
+	if err == nil {
+		baseHost = urls.Host
+	}
+	// excel 导入不使用 批量导入方式，而是逐个入库
+	for i, row := range rows {
+		if i == 0 {
+			// 跳过标题行
+			continue
+		}
+		// 补齐
+		if len(row) < len(rows[0]) {
+			row = append(row, make([]string, len(rows[0])-len(row))...)
+		}
+		qia.Finished++
+		// 支持 txt/html/md
+		status := config.ContentStatusOK
+		if qia.PlanType == 2 {
+			status = config.ContentStatusPlan
+		} else if qia.PlanType == 1 {
+			status = config.ContentStatusDraft
+		}
+		title := strings.TrimSpace(row[existFields["title"]])
+		if title == "" {
+			// 标题为空，跳过
+			continue
+		}
+		categoryId := category.Id
+		moduleId := category.ModuleId
+		extraTableName := module.TableName
+		extra := extraFields
+		if colId, ok := existFields["category_id"]; ok {
+			tmpId, _ := strconv.Atoi(row[colId])
+			if tmpId > 0 {
+				tmpCategory := qia.w.GetCategoryFromCache(uint(tmpId))
+				if tmpCategory != nil {
+					categoryId = tmpCategory.Id
+					moduleId = tmpCategory.ModuleId
+					if moduleId != module.Id {
+						// 模型不一致，重新获取 extraFields
+						tmpModule := qia.w.GetModuleFromCache(tmpCategory.ModuleId)
+						extra = make(map[string]int)
+						if tmpModule != nil {
+							extraTableName = tmpModule.TableName
+							if len(tmpModule.Fields) > 0 {
+								for ri, col := range rows[0] {
+									// 匹配自定义字段
+									for _, field := range tmpModule.Fields {
+										if field.FieldName == col {
+											extra[field.FieldName] = ri
+											break
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		// 如果分类字段填写的是分类名称
+		parentId := categoryId
+		if colId, ok := existFields["category_title"]; ok {
+			categoryTitle := strings.TrimSpace(row[colId])
+			if len(categoryTitle) > 0 {
+				tmpCategory, err := qia.w.GetCategoryByTitle(categoryTitle)
+				if err != nil {
+					// 分类不存在，创建
+					if moduleId == 0 {
+						moduleId = 1
+					}
+					tmpCategory, err = qia.w.SaveCategory(&request.Category{
+						Title:    categoryTitle,
+						ParentId: library.Ptr(parentId),
+						ModuleId: moduleId,
+						Status:   library.Ptr(uint(1)),
+						Type:     config.CategoryTypeArchive,
+					})
+				}
+				if tmpCategory != nil {
+					categoryId = tmpCategory.Id
+				}
+			}
+		}
+
+		archive := model.ArchiveDraft{
+			Archive: model.Archive{
+				Title:       title,
+				CreatedTime: qia.current.Unix(),
+				UpdatedTime: time.Now().Unix(),
+				CategoryId:  categoryId,
+				ModuleId:    moduleId,
+			},
+			Status: uint(status),
+		}
+		articleContent := strings.TrimSpace(row[existFields["content"]])
+		if len(articleContent) > 0 {
+			if (articleContent[0] != '<') && qia.w.Content.Editor != "markdown" {
+				articleContent = library.MarkdownToHTML(articleContent, frontUrl, qia.w.Content.FilterOutlink)
+			}
+		}
+
+		// 检查标题重复问题
+		var existArchive model.Archive
+		var existInRelease bool
+		if qia.CheckDuplicate {
+			err = qia.w.DB.Model(&model.Archive{}).Where("title = ?", archive.Title).Last(&existArchive).Error
+			if err == nil {
+				archive.Id = existArchive.Id
+				archive.CreatedTime = existArchive.CreatedTime
+				existInRelease = true
+			} else {
+				err = qia.w.DB.Model(&model.ArchiveDraft{}).Where("title = ?", archive.Title).Last(&existArchive).Error
+				if err == nil {
+					archive.Id = existArchive.Id
+					archive.CreatedTime = existArchive.CreatedTime
+				}
+			}
+		}
+		// 步进
+		if qia.between > 0 {
+			qia.current = qia.current.Add(qia.between)
+		}
+		// e
+		// 插入图片
+		if len(qia.images) > 0 {
+			var img string
+			if qia.ImageCategoryId == -2 {
+				// 按关键词匹配
+				keywordSplit := WordSplit(archive.Title, false)
+				for _, word := range keywordSplit {
+					if img != "" {
+						break
+					}
+					for _, v := range qia.images {
+						if strings.Contains(v.FileName, word) {
+							img = v.FileLocation
+							break
+						}
+					}
+				}
+			} else {
+				// 随机一张，已经随机过了，因此这里就是顺序
+				img = qia.images[qia.nextImage].FileLocation
+				qia.nextImage = (qia.nextImage + 1) % len(qia.images)
+			}
+			if img != "" {
+				imgTag := "<img src='" + img + "' alt='" + archive.Title + "' />"
+
+				var contents = strings.Split(articleContent, "\n")
+				if len(contents) < 2 && strings.Contains(articleContent, ">") {
+					contents = strings.SplitAfter(articleContent, ">")
+				}
+				index := len(contents) / 3
+				contents = append(contents, "")
+				copy(contents[index+1:], contents[index:])
+				// ![新的图片](http://xxx/xxx.webp)
+				if qia.w.Content.Editor == "markdown" {
+					imgTag = fmt.Sprintf("![%s](%s)", archive.Title, img)
+				}
+				contents[index] = imgTag
+				articleContent = strings.Join(contents, "")
+				archive.Images = []string{img}
+			}
+		} else {
+			// 提取缩略图
+			re, _ := regexp.Compile(`(?i)<img.*?src=["'](.+?)["'].*?>`)
+			match := re.FindStringSubmatch(articleContent)
+			if len(match) > 1 {
+				archive.Images = append(archive.Images, match[1])
+			} else {
+				// 匹配Markdown ![新的图片](http://xxx/xxx.webp)
+				re, _ = regexp.Compile(`!\[([^]]*)\]\(([^)]+)\)`)
+				match = re.FindStringSubmatch(articleContent)
+				if len(match) > 2 {
+					archive.Images = append(archive.Images, match[2])
+				}
+			}
+		}
+		// 解析description
+		archive.Description = library.ParseDescription(strings.ReplaceAll(library.StripTags(articleContent), "\n", " "), 250)
+		// 解析urlToken
+		archive.UrlToken = library.GetPinyin(archive.Title, true) + strconv.Itoa(int(archive.Id))
+		// 处理更多主表字段
+		// id, parent_id, seo_title, url_token,logo,images, keywords, description, user_id, price, stock, read_level, password, sort, origin_url, origin_title
+		if colId, ok := existFields["id"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.Id = tmpId
+			}
+		}
+		if colId, ok := existFields["parent_id"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.ParentId = tmpId
+			}
+		}
+		if colId, ok := existFields["place_id"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.PlaceId = uint(tmpId)
+			}
+		}
+		if colId, ok := existFields["logo"]; ok {
+			logo := strings.TrimSpace(row[colId])
+			if len(logo) > 0 {
+				archive.Images = append(archive.Images, logo)
+			}
+		}
+		if colId, ok := existFields["images"]; ok {
+			archive.Images = strings.Split(strings.TrimSpace(row[colId]), ",")
+		}
+		if qia.w.Content.RemoteDownload == 1 {
+			// 处理 images
+			for ii, v := range archive.Images {
+				if strings.HasPrefix(v, qia.w.PluginStorage.StorageUrl) {
+					continue
+				}
+				if strings.HasPrefix(v, "//") || strings.HasPrefix(v, "http") {
+					imgUrl, err2 := url.Parse(v)
+					if err2 == nil && imgUrl.Host != "" && imgUrl.Host != baseHost {
+						// 自动下载
+						attachment, err2 := qia.w.DownloadRemoteImage(v, archive.Title, 0)
+						if err2 == nil {
+							// 下载完成
+							archive.Images[ii] = strings.TrimPrefix(attachment.Logo, qia.w.PluginStorage.StorageUrl)
+						}
+					}
+				}
+			}
+		}
+		if colId, ok := existFields["seo_title"]; ok {
+			archive.SeoTitle = row[colId]
+		}
+		if colId, ok := existFields["url_token"]; ok {
+			archive.UrlToken = row[colId]
+		}
+		if colId, ok := existFields["keywords"]; ok {
+			archive.Keywords = row[colId]
+		}
+		if colId, ok := existFields["description"]; ok && row[colId] != "" {
+			archive.Description = row[colId]
+		}
+		if colId, ok := existFields["user_id"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.UserId = uint(tmpId)
+			}
+		}
+		if colId, ok := existFields["price"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.Price = tmpId
+			}
+		}
+		if colId, ok := existFields["stock"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.Stock = tmpId
+			}
+		}
+		if colId, ok := existFields["read_level"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.ReadLevel = int(tmpId)
+			}
+		}
+		if colId, ok := existFields["password"]; ok {
+			archive.Password = row[colId]
+		}
+		if colId, ok := existFields["sort"]; ok {
+			tmpId, _ := strconv.ParseInt(row[colId], 10, 64)
+			if tmpId > 0 {
+				archive.Sort = uint(tmpId)
+			}
+		}
+		if colId, ok := existFields["origin_url"]; ok {
+			archive.OriginUrl = row[colId]
+		}
+		if colId, ok := existFields["origin_title"]; ok {
+			archive.OriginTitle = row[colId]
+		}
+		if colId, ok := existFields["views"]; ok {
+			tmpViews, _ := strconv.ParseInt(row[colId], 10, 64)
+			archive.Views = uint(tmpViews)
+		}
+		if colId, ok := existFields["fixed_link"]; ok {
+			archive.FixedLink = row[colId]
+		}
+		// 先对主表进行入库
+		tx := qia.w.DB.Begin()
+		// 需要写入表 archive_category, archive_data，archives, archive_drafts, tag_data, tag
+		if existInRelease || qia.PlanType == 0 {
+			// release mode
+			err = tx.Save(&archive.Archive).Error
+			if err != nil {
+				tx.Rollback()
+				continue
+			}
+		} else {
+			// 入库到 draft
+			err = tx.Save(&archive).Error
+			if err != nil {
+				tx.Rollback()
+				continue
+			}
+		}
+		// 保存 content
+		archiveData := model.ArchiveData{
+			Id:      archive.Id,
+			Content: articleContent,
+		}
+		err = tx.Save(&archiveData).Error
+		if err != nil {
+			tx.Rollback()
+			continue
+		}
+		tx.Commit()
+		// 保存Flags
+		var flags []string
+		if colId, ok := existFields["flag"]; ok {
+			flags = strings.Split(row[colId], ",")
+			if len(flags) > 0 {
+				_ = qia.w.SaveArchiveFlags(archive.Id, flags)
+			}
+		}
+		// 保存分类ID
+		_ = qia.w.SaveArchiveCategories(archive.Id, []uint{archive.CategoryId})
+		// 处理 tag
+		if colId, ok := existFields["tag"]; ok {
+			tags := strings.Split(strings.ReplaceAll(row[colId], "，", ","), ",")
+			if len(tags) > 0 {
+				_ = qia.w.SaveTagData(archive.Id, tags)
+			}
+		}
+		// 处理附表
+		if len(extra) > 0 {
+			var extraData = make(map[string]interface{})
+			for k, colId := range extra {
+				extraData[k] = row[colId]
+			}
+			// 先检查是否存在
+			var existsId int64
+			qia.w.DB.Table(extraTableName).Where("`id` = ?", archive.Id).Pluck("id", &existsId)
+			if existsId > 0 {
+				// 已存在
+				qia.w.DB.Table(extraTableName).Where("`id` = ?", archive.Id).Updates(extraData)
+			} else {
+				// 新建
+				extraData["id"] = archive.Id
+				qia.w.DB.Table(extraTableName).Where("`id` = ?", archive.Id).Create(extraData)
+			}
+		}
+
+		qia.Succeed++
+	}
+
+	qia.IsFinished = true
+	// 生成LLMs.txt
+	go qia.w.ImmediateLLMsBuild()
+
+	return nil
+}
+
+func (qia *QuickImportArchive) SaveBatches(archives []model.ArchiveDraft) {
+	tx := qia.w.DB.Begin()
+	defer tx.Commit()
+
+	var archiveCategories = make([]model.ArchiveCategory, 0, len(archives))
+	var archiveData = make([]model.ArchiveData, 0, len(archives))
+	var lastId int64
+	for i := range archives {
+		lastId = model.GetNextArchiveId(tx, true)
+		archives[i].Id = lastId
+		archiveCategories = append(archiveCategories, model.ArchiveCategory{
+			CategoryId: archives[i].CategoryId,
+			ArchiveId:  archives[i].Id,
+		})
+		archives[i].ArchiveData.Id = archives[i].Id
+		archiveData = append(archiveData, *archives[i].ArchiveData)
+	}
+
+	if qia.PlanType != 0 {
+		// 入库到 draft
+		tx.CreateInBatches(archives, 1000)
+	} else {
+		// release mode
+		var release = make([]model.Archive, 0, len(archives))
+		for _, v := range archives {
+			release = append(release, v.Archive)
+		}
+		tx.CreateInBatches(release, 1000)
+	}
+	tx.CreateInBatches(archiveData, 1000)
+	tx.CreateInBatches(archiveCategories, 1000)
+	log.Println("in id ", lastId)
+	qia.Message = qia.w.Tr("currentInsertId%d", lastId)
+	qia.Succeed += len(archives)
+}
+
+// hasArchiveFrontmatter 判断内容是否以 YAML frontmatter 开头。
+// frontmatter 必须以单独一行 `---` 开始，并在后续某行以 `---` 结束。
+func hasArchiveFrontmatter(content []byte) bool {
+	if !bytes.HasPrefix(content, []byte("---")) {
+		return false
+	}
+	rest := content[3:]
+	// 第一个字符必须是换行（`---\n`），否则可能是 `---xxx` 这种正文
+	if len(rest) == 0 || (rest[0] != '\n' && rest[0] != '\r') {
+		return false
+	}
+	return bytes.Contains(rest, []byte("\n---"))
+}
+
+// parseArchiveFrontmatter 解析 YAML frontmatter，返回 frontmatter 与正文。
+// 解析失败时返回 ok=false，调用方应按原始内容处理。
+func parseArchiveFrontmatter(content []byte) (map[string]any, []byte, bool) {
+	var fm = map[string]any{}
+	rest := content[3:]
+	// 统一换行便于定位
+	normalized := bytes.ReplaceAll(rest, []byte("\r\n"), []byte{'\n'})
+	end := bytes.Index(normalized, []byte("\n---"))
+	if end < 0 {
+		return fm, content, false
+	}
+	yamlBlock := normalized[:end]
+	yamlBlock = bytes.ReplaceAll(yamlBlock, []byte{'\t'}, []byte("  "))
+	// 正文从结束标记 `---` 之后开始
+	bodyStart := end + 4 // `\n---` 长度为 4
+	body := normalized[bodyStart:]
+	if err := yaml.Unmarshal(yamlBlock, &fm); err != nil {
+		return fm, content, false
+	}
+	return fm, body, true
+}
+
+// applyArchiveFrontmatter 将 frontmatter 字段映射到 archive，仅覆盖非空字段。
+// 处理顺序：基本字段 -> 时间 -> 图片 -> 分类。
+func (w *Website) applyArchiveFrontmatter(archive *model.ArchiveDraft, fm map[string]any) {
+	if fm["title"] != nil {
+		if data, ok := fm["title"].(string); ok {
+			archive.Title = data
+		}
+	}
+	if fm["seo_title"] != nil {
+		if data, ok := fm["seo_title"].(string); ok {
+			archive.SeoTitle = data
+		}
+	}
+	if fm["description"] != nil {
+		if data, ok := fm["description"].(string); ok {
+			archive.Description = library.ParseDescription(data, 1000)
+		}
+	}
+	if fm["keywords"] != nil {
+		if data, ok := fm["keywords"].(string); ok {
+			archive.Keywords = data
+		} else if data, ok := fm["keywords"].([]string); ok {
+			archive.Keywords = strings.Join(data, ",")
+		}
+	}
+	if fm["tags"] != nil {
+		if data, ok := fm["tags"].([]string); ok {
+			archive.Keywords = strings.Join(data, ",")
+		} else if data, ok := fm["tags"].(string); ok {
+			archive.Keywords = data
+		}
+	}
+	if fm["utl_token"] != nil {
+		if data, ok := fm["utl_token"].(string); ok {
+			archive.UrlToken = data
+		}
+	} else if fm["slug"] != nil {
+		if data, ok := fm["slug"].(string); ok {
+			archive.UrlToken = data
+		}
+	}
+	if fm["canonical_url"] != nil {
+		if data, ok := fm["canonical_url"].(string); ok {
+			archive.CanonicalUrl = data
+		}
+	}
+	// 创建时间：支持 date / created_time，格式兼容日期与时间戳
+	if fm["date"] != nil {
+		if data, ok := fm["date"].(string); ok {
+			if t, err := now.Parse(data); err == nil {
+				archive.CreatedTime = t.Unix()
+			}
+		}
+	} else if fm["created_time"] != nil {
+		timeStamp, err := strconv.ParseInt(fmt.Sprintf("%v", fm["created_time"]), 10, 64)
+		if err == nil {
+			archive.CreatedTime = timeStamp
+		}
+	}
+	// 图片：单张 image/thumbnail 或多张 images
+	var images []string
+	if fm["logo"] != nil {
+		if data, ok := fm["logo"].(string); ok {
+			images = append(images, data)
+		}
+	}
+	if fm["image"] != nil {
+		if data, ok := fm["image"].(string); ok {
+			images = append(images, data)
+		}
+	}
+	if fm["images"] != nil {
+		if data, ok := fm["images"].([]string); ok {
+			images = append(images, data...)
+		}
+	}
+	if len(images) > 0 {
+		archive.Images = images
+	}
+	if fm["id"] != nil {
+		tmpData, err := strconv.ParseInt(fmt.Sprintf("%v", fm["id"]), 10, 64)
+		if err == nil {
+			archive.Id = tmpData
+		}
+	}
+	if fm["category_id"] != nil {
+		tmpData, err := strconv.ParseInt(fmt.Sprintf("%v", fm["category_id"]), 10, 64)
+		if err == nil {
+			archive.CategoryId = uint(tmpData)
+		}
+	}
+	if fm["module_id"] != nil {
+		tmpData, err := strconv.ParseInt(fmt.Sprintf("%v", fm["module_id"]), 10, 64)
+		if err == nil {
+			archive.ModuleId = uint(tmpData)
+		}
+	}
+	categoryTitle := ""
+	if fm["category_title"] != nil {
+		if data, ok := fm["category_title"].(string); ok {
+			categoryTitle = data
+		}
+	}
+	if fm["category"] != nil {
+		if data, ok := fm["category"].(string); ok && data != "" {
+			categoryTitle = data
+		}
+	}
+	if categoryTitle != "" {
+		category, err := w.GetCategoryByTitle(categoryTitle)
+		if err == nil {
+			archive.CategoryId = category.Id
+		} else {
+			// 分类不存在，动态创建
+			if archive.ModuleId == 0 {
+				archive.ModuleId = 1
+			}
+			tmpCategory, _ := w.SaveCategory(&request.Category{
+				Title:    categoryTitle,
+				ModuleId: archive.ModuleId,
+				Status:   library.Ptr(uint(1)),
+				Type:     config.CategoryTypeArchive,
+			})
+			if tmpCategory != nil {
+				archive.CategoryId = tmpCategory.Id
+			}
+		}
+	}
+	// 不支持 extra
+}
+
+func (w *Website) GetArchiveSkuById(archiveId, skuId int64) (*model.ArchiveSku, error) {
+	var sku model.ArchiveSku
+	err := w.DB.Where("id = ?", skuId).First(&sku).Error
+	if err != nil {
+		return nil, err
+	}
+	if archiveId != sku.ArchiveId {
+		return nil, errors.New("sku not found")
+	}
+	sku.Thumb = sku.GetThumb(w.PluginStorage.StorageUrl, w.Content.DefaultThumb)
+
+	return &sku, nil
+}
+
+func (w *Website) GetArchiveSkuByUrlToken(urlToken string) (*model.ArchiveSku, error) {
+	var sku model.ArchiveSku
+	err := w.DB.Where("url_token = ?", urlToken).First(&sku).Error
+	if err != nil {
+		return nil, err
+	}
+	sku.Thumb = sku.GetThumb(w.PluginStorage.StorageUrl, w.Content.DefaultThumb)
+
+	return &sku, nil
+}
+
+func (w *Website) GetDefaultSku(options []*model.ArchiveOption) (*model.ArchiveSku, error) {
+	var sku model.ArchiveSku
+	var valueIds []string
+	for _, opt := range options {
+		var tmpId int64
+		for _, val := range opt.Values {
+			if val.IsDefault {
+				tmpId = val.Id
+				break
+			}
+		}
+		if tmpId == 0 && len(opt.Values) > 0 {
+			tmpId = opt.Values[0].Id
+		}
+		valueIds = append(valueIds, strconv.FormatInt(tmpId, 10))
+	}
+	symbol := strings.Join(valueIds, "-")
+	err := w.DB.Where("symbol = ?", symbol).First(&sku).Error
+	if err != nil {
+		return nil, err
+	}
+	sku.Thumb = sku.GetThumb(w.PluginStorage.StorageUrl, w.Content.DefaultThumb)
+
+	return &sku, nil
+}
+
+func (w *Website) GetArchiveSkuList(archiveId int64) []*model.ArchiveSku {
+	var skus []*model.ArchiveSku
+	w.DB.Where("archive_id = ?", archiveId).Find(&skus)
+	return skus
+}

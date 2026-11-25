@@ -1,0 +1,278 @@
+package manageController
+
+import (
+	"encoding/json"
+	"image"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/kataras/iris/v12"
+	"golang.org/x/image/webp"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/provider"
+)
+
+// PluginWatermarkConfig 获取图片水印插件配置。
+func PluginWatermarkConfig(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	setting := currentSite.PluginWatermark
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": setting,
+	})
+}
+
+// PluginWatermarkConfigForm 保存图片水印插件配置。
+func PluginWatermarkConfigForm(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	var req config.PluginWatermark
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 部分更新：以现值为基底，仅覆盖请求体中显式出现的字段，未传字段保持原配置。
+	body, err := ctx.GetBody()
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	req = *currentSite.PluginWatermark
+	if err := library.MergeJSONPayload(payload, &req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	if req.Size == 0 {
+		req.Size = 20
+	}
+	if req.Position == 0 {
+		req.Position = 9
+	}
+	if req.Opacity == 0 {
+		req.Opacity = 100
+	}
+	if req.MinSize == 0 {
+		req.MinSize = 400
+	}
+	if req.Color == "" {
+		req.Color = "#ffffff"
+	}
+
+	currentSite.PluginWatermark.Open = req.Open
+	currentSite.PluginWatermark.Type = req.Type
+	currentSite.PluginWatermark.ImagePath = req.ImagePath
+	currentSite.PluginWatermark.Text = req.Text
+	currentSite.PluginWatermark.FontPath = req.FontPath
+	currentSite.PluginWatermark.Size = req.Size
+	currentSite.PluginWatermark.Color = req.Color
+	currentSite.PluginWatermark.Position = req.Position
+	currentSite.PluginWatermark.Opacity = req.Opacity
+
+	err = currentSite.SaveSettingValue(provider.WatermarkSettingKey, currentSite.PluginWatermark)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	currentSite.DeleteCacheIndex()
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateWatermarkConfiguration"))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("ConfigurationUpdated"),
+	})
+}
+
+// PluginWatermarkPreview 根据当前水印配置生成水印效果预览。
+func PluginWatermarkPreview(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+
+	cfg := currentSite.PluginWatermark
+	cfg.Open = true
+	wm := currentSite.NewWatermark(cfg)
+	if wm == nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  "watermark error",
+		})
+		return
+	}
+	str := wm.DrawWatermarkPreview()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"data": str,
+	})
+}
+
+// PluginWatermarkUploadFile 上传水印插件资源文件（字体或水印图片）。
+//
+// 参数说明：
+//   - 表单参数 "name": 资源类型，只能为 "font_path"（字体，仅支持 .ttf）或 "image_path"（水印图片）。
+//   - 表单参数 "file": 上传的文件。
+//
+// imageFormatExt 由 image.Decode 返回的格式给出落地扩展名（白名单映射，未知回落 .png）。
+//
+// 为什么不能用用户上传的文件名后缀：内容校验（image.Decode）挡不住"图片马"——
+// 一张合法 GIF 尾部追加 <?php ... ?> 依然能解码成功，若按其文件名写成 .phtml，
+// 落地到 uploads 目录就会被 php-fpm 执行。2026-10-31 的木马事件属于同类落地方式。
+func imageFormatExt(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "jpeg", "jpg":
+		return ".jpg"
+	case "png":
+		return ".png"
+	case "gif":
+		return ".gif"
+	case "webp":
+		return ".webp"
+	case "bmp":
+		return ".bmp"
+	case "tiff", "tif":
+		return ".tiff"
+	case "ico":
+		return ".ico"
+	default:
+		return ".png"
+	}
+}
+
+func PluginWatermarkUploadFile(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	name := ctx.PostValue("name")
+	// allow upload font and image
+	if name != "font_path" && name != "image_path" {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("FileNameInvalid"),
+		})
+		return
+	}
+
+	file, info, err := ctx.FormFile("file")
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	defer file.Close()
+	var fileName string
+	if name == "font_path" {
+		// only support .ttf font
+		if !strings.HasSuffix(info.Filename, ".ttf") {
+			ctx.JSON(iris.Map{
+				"code": config.StatusFailed,
+				"msg":  ctx.Tr("OnlySupportsTtfFormat"),
+			})
+			return
+		}
+		fileName = "uploads/watermark/watermark_font.ttf"
+	} else {
+		// image
+		var imgFormat string
+		_, imgFormat, err = image.Decode(file)
+		if err != nil {
+			file.Seek(0, 0)
+			if strings.HasSuffix(info.Filename, "webp") {
+				_, err = webp.Decode(file)
+				imgFormat = "webp"
+			}
+			if err != nil {
+				ctx.JSON(iris.Map{
+					"code": config.StatusFailed,
+					"msg":  ctx.Tr("UnsupportedImageFormat"),
+				})
+				return
+			}
+		}
+		file.Seek(0, 0)
+		fileName = "uploads/watermark/watermark_image" + imageFormatExt(imgFormat)
+	}
+	buff, err := io.ReadAll(file)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("ReadFailed"),
+		})
+		return
+	}
+
+	err = os.MkdirAll(filepath.Dir(currentSite.PublicPath+fileName), os.ModePerm)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("DirectoryCreationFailed"),
+		})
+		return
+	}
+	err = os.WriteFile(currentSite.PublicPath+fileName, buff, 0644)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("FileSaveFailed"),
+		})
+		return
+	}
+
+	if name == "font_path" {
+		currentSite.PluginWatermark.FontPath = fileName
+	} else {
+		currentSite.PluginWatermark.ImagePath = fileName
+	}
+	err = currentSite.SaveSettingValue(provider.TitleImageSettingKey, currentSite.PluginTitleImage)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("UploadWatermarkResourceLog", name))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("FileUploadCompleted"),
+		"data": fileName,
+	})
+}
+
+// PluginWatermarkGenerate 执行对图片资源库里的图片添加水印。该操作会对图片库中所有未加水印图片批量添加水印。
+func PluginWatermarkGenerate(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+
+	currentSite.GenerateAllWatermark()
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("BatchGenerateWatermarkImages"))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("SubmittedForBackgroundProcessing"),
+	})
+}

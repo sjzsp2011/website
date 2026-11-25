@@ -1,0 +1,307 @@
+package crond
+
+import (
+	"math/rand"
+	"sync"
+	"time"
+
+	"github.com/robfig/cron/v3"
+	"kandaoni.com/anqicms/provider"
+)
+
+var crontab *cron.Cron
+
+func Crond() {
+	// 使用 WithChain + Recover 防止 panic 导致整个调度器崩溃
+	crontab = cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cron.DefaultLogger)))
+	//每天执行
+	crontab.AddFunc("@daily", dailyTask)
+	// 每天8点执行
+	crontab.AddFunc("1 1 8 * * *", daily8HourTask)
+	// 每小时执行
+	crontab.AddFunc("@hourly", hourlyTask)
+	// 每10分钟执行
+	crontab.AddFunc("1 */10 * * * *", hourly10MinuteTask)
+	// 每分钟执行
+	crontab.AddFunc("1 * * * * *", minutelyTask)
+	crontab.Start()
+}
+
+func Stop() {
+	if crontab != nil {
+		crontab.Stop()
+	}
+}
+
+func dailyTask() {
+	//每天执行一次，清理很久的statistic
+	cleanStatistics()
+	// 每天清理一次回收站内容
+	CleanArchives()
+	// 每天检查VIP
+	CleanUserVip()
+	// 每天检查一次LLMs更新频率
+	CheckLLMsUpdateFrequency()
+	// 同步 brevo 数据
+	SyncBrevo()
+}
+
+func daily8HourTask() {
+	//每天检查一次收录量
+	QuerySpiderInclude()
+	// 每天8点下发前一天网站数据到邮箱
+	SendStatisticsMail()
+}
+
+func hourlyTask() {
+	// 每小时挖词
+	startDigKeywords()
+	// 每小时检查一次账号状态
+	CheckAuthValid()
+	// 取消活动
+	UpdateActivities()
+	// 检查购物车，订单
+	CheckCartAndOrders()
+}
+
+func hourly10MinuteTask() {
+	// 每十分钟检查一次采集
+	CollectArticles()
+	// 每十分钟统计一次统计数据
+	calcStatistics()
+}
+
+func minutelyTask() {
+	// 每分钟检查一次需要发布的文章
+	PublishPlanContents()
+	// 每分钟提现
+	CheckWithdrawToWechat()
+	// 每分钟定期检查订单
+	AutoCheckOrders()
+	// 每分钟检查一次时间因子
+	UpdateTimeFactor()
+	// 每分钟检查一次 AI文章计划
+	AiArticlePlan()
+	// 优惠券过期
+	CouponExpire()
+}
+
+func startDigKeywords() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.StartDigKeywords(false)
+	}
+}
+
+func cleanStatistics() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CleanStatistics()
+	}
+}
+
+func calcStatistics() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed || w.StatisticLog == nil {
+			continue
+		}
+		w.StatisticLog.Calc(w.DB)
+	}
+}
+
+func PublishPlanContents() {
+	websites := provider.GetWebsites()
+	var ch = make(chan bool, 5)
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		ch <- true
+		go func(w2 *provider.Website) {
+			defer func() { <-ch }()
+			w2.PublishPlanArchives()
+		}(w)
+	}
+}
+
+func CleanArchives() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CleanArchives()
+	}
+}
+
+func CollectArticles() {
+	websites := provider.GetWebsites()
+	var ch = make(chan struct{}, 5)
+	var wg sync.WaitGroup
+
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		wg.Add(2)
+		go func(w2 *provider.Website) {
+			defer wg.Done()
+			defer func() { <-ch }()
+			ch <- struct{}{}
+			w2.AiGenerateArticles()
+		}(w)
+		go func(w2 *provider.Website) {
+			defer wg.Done()
+			defer func() { <-ch }()
+			ch <- struct{}{}
+			w2.CollectArticles()
+		}(w)
+	}
+	wg.Wait()
+	close(ch)
+}
+
+func QuerySpiderInclude() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.QuerySpiderInclude()
+	}
+}
+
+func CheckWithdrawToWechat() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CheckWithdrawToWechat()
+	}
+}
+
+func CouponExpire() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CheckCouponCodeExpire()
+	}
+}
+
+func UpdateActivities() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CheckActivities()
+	}
+}
+
+func AutoCheckOrders() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.AutoCheckOrders()
+	}
+}
+
+func CheckCartAndOrders() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CheckCartAndOrders()
+	}
+}
+
+func CleanUserVip() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CleanUserVip()
+	}
+}
+
+func CheckLLMsUpdateFrequency() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.CheckLLMsUpdateFrequency()
+	}
+}
+
+func CheckAuthValid() {
+	rd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	time.Sleep(time.Duration(rd.Intn(600)+1) * time.Second)
+	defaultSite := provider.CurrentSite(nil)
+	defaultSite.AnqiCheckLogin(false)
+}
+
+func UpdateTimeFactor() {
+	websites := provider.GetWebsites()
+	var ch = make(chan bool, 5)
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		ch <- true
+		go func(w2 *provider.Website) {
+			defer func() { <-ch }()
+			w2.TryToRunTimeFactor()
+		}(w)
+	}
+}
+
+func AiArticlePlan() {
+	websites := provider.GetWebsites()
+	var ch = make(chan bool, 5)
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		ch <- true
+		go func(w2 *provider.Website) {
+			defer func() { <-ch }()
+			w2.SyncAiArticlePlan()
+		}(w)
+	}
+}
+
+func SendStatisticsMail() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.SendStatisticsMail()
+	}
+}
+
+func SyncBrevo() {
+	websites := provider.GetWebsites()
+	for _, w := range websites {
+		if !w.Initialed {
+			continue
+		}
+		w.SyncBrevo()
+		w.RecoverPurchase()
+	}
+}

@@ -1,0 +1,47 @@
+package manageController
+
+import (
+	"github.com/kataras/iris/v12"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/provider"
+	"kandaoni.com/anqicms/request"
+)
+
+// PluginRobots 获取当前站点的 robots.txt 内容。
+func PluginRobots(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	robots := currentSite.GetRobots()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": iris.Map{
+			"robots": robots,
+		},
+	})
+}
+
+// PluginRobotsForm 保存当前站点的 robots.txt 内容。
+func PluginRobotsForm(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.PluginRobotsConfig
+	if !readJSONPayload(ctx, &req) {
+		return
+	}
+
+	err := currentSite.SaveRobots(req.Robots)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateRobots"))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("ConfigurationUpdated"),
+	})
+}

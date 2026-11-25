@@ -1,0 +1,232 @@
+package model
+
+import (
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lib/pq"
+	"gorm.io/gorm"
+	"kandaoni.com/anqicms/config"
+)
+
+type Archive struct {
+	//默认字段
+	Id            int64          `json:"id" gorm:"column:id;type:bigint(20) not null AUTO_INCREMENT;primaryKey"`
+	ParentId      int64          `json:"parent_id" gorm:"column:parent_id;type:bigint(20) not null;default:0;index"`
+	CreatedTime   int64          `json:"created_time" gorm:"column:created_time;type:bigint(20);autoCreateTime;index:idx_created_time;index:idx_category_created_time,priority:2;index:idx_module_created_time,priority:2"`
+	UpdatedTime   int64          `json:"updated_time" gorm:"column:updated_time;type:bigint(20);autoUpdateTime;index:idx_updated_time"`
+	Title         string         `json:"title" gorm:"column:title;type:varchar(190) not null;default:'';index"`
+	SeoTitle      string         `json:"seo_title" gorm:"column:seo_title;type:varchar(250) not null;default:''"`
+	UrlToken      string         `json:"url_token" gorm:"column:url_token;type:varchar(190) not null;default:'';index"`
+	Keywords      string         `json:"keywords" gorm:"column:keywords;type:varchar(250) not null;default:''"`
+	Description   string         `json:"description" gorm:"column:description;type:varchar(1000) not null;default:''"`
+	ModuleId      uint           `json:"module_id" gorm:"column:module_id;type:int(10) unsigned not null;default:1;index:idx_module_created_time,priority:1"`
+	CategoryId    uint           `json:"category_id" gorm:"column:category_id;type:int(10) unsigned not null;default:0;index:idx_category_created_time,priority:1"`
+	PlaceId       uint           `json:"place_id" gorm:"column:place_id;type:int(10) not null;default:0;index"` // 绑定的地区ID
+	Views         uint           `json:"views" gorm:"column:views;type:int(10) unsigned not null;default:0;index:idx_views"`
+	CommentCount  uint           `json:"comment_count" gorm:"column:comment_count;type:int(10) unsigned not null;default:0"`
+	FavoriteCount uint           `json:"favorite_count" gorm:"column:favorite_count;type:int(10) unsigned not null;default:0"`
+	Images        pq.StringArray `json:"images" gorm:"column:images;type:text default null"`
+	Template      string         `json:"template" gorm:"column:template;type:varchar(250) not null;default:''"`
+	CanonicalUrl  string         `json:"canonical_url" gorm:"column:canonical_url;type:varchar(250) not null;default:''"` // 规范链接
+	FixedLink     string         `json:"fixed_link" gorm:"column:fixed_link;type:varchar(190) default null;index"`        // 固化的链接
+	UserId        uint           `json:"user_id" gorm:"column:user_id;type:int(10) unsigned not null;default:0;index"`
+	Price         int64          `json:"price" gorm:"column:price;type:bigint(20) not null;default:0"`
+	// OriginPrice / CostPrice 存在 archive_products（见 model.ArchiveProduct）
+	OriginPrice int64 `json:"origin_price" gorm:"-"`
+	CostPrice   int64 `json:"cost_price" gorm:"-"`
+	// Stock 留在主表：它有一整套原子表达式写（下单扣减、退单回补、SKU 汇总重算），
+	// 拆表就没法用一条 UPDATE 完成，见 model.ArchiveProduct 顶部说明。
+	Stock     int64  `json:"stock" gorm:"column:stock;type:bigint(20) not null;default:9999999"`
+	ReadLevel int    `json:"read_level" gorm:"column:read_level;type:int(10) not null;default:0"`             // 阅读关联 group level
+	Password  string `json:"password" gorm:"column:password;type:varchar(32) not null;default:''"`            // 明文密码，需要使用密码查看文档的时候填写
+	Sort      uint   `json:"sort" gorm:"column:sort;type:int(10) unsigned not null;default:0;index:idx_sort"` // 数值越大，越靠前
+	//采集专用
+	HasPseudo   int    `json:"has_pseudo" gorm:"column:has_pseudo;type:tinyint(1) not null;default:0"`
+	KeywordId   uint   `json:"keyword_id" gorm:"column:keyword_id;type:bigint(20) not null;default:0"`
+	OriginUrl   string `json:"origin_url" gorm:"column:origin_url;type:varchar(190) not null;default:'';index:idx_origin_url"`
+	OriginTitle string `json:"origin_title" gorm:"column:origin_title;type:varchar(190) not null;default:'';index:idx_origin_title"`
+	OriginId    int    `json:"origin_id" gorm:"column:origin_id;type:tinyint(1) unsigned not null;default:0"` // 来源 0， 1 采集，2 AI生成
+	// 商城专用字段：全部存在 archive_products（见 model.ArchiveProduct）。
+	// 这里保留字段名与 json tag 只为维持前端/模板契约；读由 provider 注册的
+	// GORM 查询回调填充，写由 Archive.AfterSave 落到侧表。
+	// gorm:"-" 是刻意的：archives 表不再有这些列（旧列将在 3.8.0 DROP）。
+	Brand          string       `json:"brand" gorm:"-"`
+	VideoUrl       string       `json:"video_url" gorm:"-"`        // 视频主图
+	NeedLogistics  bool         `json:"need_logistics" gorm:"-"`   // 需要物流
+	IsFreeShipping bool         `json:"is_free_shipping" gorm:"-"` // 免运费
+	SoldCount      int64        `json:"sold_count" gorm:"-"`       // 销量
+	ReviewCount    int64        `json:"review_count" gorm:"-"`     // 评价数量
+	AverageScore   float32      `json:"average_score" gorm:"-"`    // 平均评分
+	OptionType     int          `json:"option_type" gorm:"-"`      // sku模式，0 无SKU，1 组合SKU，2 加价SKU
+	Weight         float64      `json:"weight" gorm:"-"`           // 如果填写了长宽高，并且设置了体积重系数，则自动计算重量
+	WeightUnit     string       `json:"weight_unit" gorm:"-"`      // 如果填写了长宽高，并且设置了体积重系数，则自动使用重量单位kg
+	Length         float64      `json:"length" gorm:"-"`
+	Width          float64      `json:"width" gorm:"-"`
+	Height         float64      `json:"height" gorm:"-"`
+	Volume         float64      `json:"volume" gorm:"-"` // 固定是 m³，自动换算
+	LengthUnit     string       `json:"length_unit" gorm:"-"`
+	AllowOversold  bool         `json:"allow_oversold" gorm:"-"`          // 允许超售
+	OrderFields    moduleFields `json:"order_fields,omitempty" gorm:"-"`  // 订单字段
+	MinQuantity    int          `json:"min_quantity,omitempty" gorm:"-"`  // 最小购买数量
+	MaxQuantity    int          `json:"max_quantity,omitempty" gorm:"-"`  // 最大购买数量
+	StepQuantity   int          `json:"step_quantity,omitempty" gorm:"-"` // 购买数量步长
+	ProductType    int          `json:"product_type" gorm:"-"`            // 产品类型，1 普通商品，2 wholesale，3 custom, 4 vertual， 5 service， 6 subscription
+
+	// 其他内容
+	Category       *Category    `json:"category" gorm:"-"`
+	ModuleName     string       `json:"module_name" gorm:"-"`
+	ArchiveData    *ArchiveData `json:"data" gorm:"-"`
+	Logo           string       `json:"logo" gorm:"-"`
+	Thumb          string       `json:"thumb" gorm:"-"`
+	Link           string       `json:"link" gorm:"-"`
+	Tags           []*Tag       `json:"tags,omitempty" gorm:"-"`
+	HasOrdered     bool         `json:"has_ordered" gorm:"-"` // 是否订购了
+	FavorablePrice int64        `json:"favorable_price" gorm:"-"`
+	HasPassword    bool         `json:"has_password" gorm:"-"`             // 需要密码的时候，这个字段为true
+	PasswordValid  bool         `json:"password_valid,omitempty" gorm:"-"` // 验证密码正确
+	CategoryTitles []string     `json:"category_titles" gorm:"-"`
+	CategoryIds    []uint       `json:"category_ids" gorm:"-"`
+	Flag           string       `json:"flag" gorm:"-"` // 同 flags，只是这是用,分割的
+	Type           string       `json:"type" gorm:"-"` // 类型，default 是archive，其他值：category，tag
+	Relations      []*Archive   `json:"relations" gorm:"-"`
+	Content        string       `json:"content" gorm:"-"`     // 列表获取Content的时候，使用这个字段
+	IsFavorite     bool         `json:"is_favorite" gorm:"-"` // 是否收藏了
+	Quantity       int          `json:"quantity,omitempty" gorm:"-"`
+	CartId         int64        `json:"cart_id,omitempty" gorm:"-"`
+	Amount         int64        `json:"amount,omitempty" gorm:"-"`
+	OriginAmount   int64        `json:"origin_amount,omitempty" gorm:"-"`
+	// sku
+	Options        []*ArchiveOption    `json:"options,omitempty" gorm:"-"`
+	Skus           []*ArchiveSku       `json:"skus,omitempty" gorm:"-"`
+	Sku            *ArchiveSku         `json:"sku,omitempty" gorm:"-"`             // 单个，选择的一个sku，比如收藏夹，购物车，愿望清单等读取时用到
+	WholesaleRules []*WholesaleRule    `json:"wholesale_rules,omitempty" gorm:"-"` // 批发规则
+	WholesaleRule  *WholesaleRule      `json:"wholesale_rule,omitempty" gorm:"-"`  // 适用批发规则
+	OrderExtra     ExtraData           `json:"order_extra,omitempty" gorm:"-"`
+	SkuValues      ArchiveOptionValues `json:"sku_values,omitempty" gorm:"-"`
+
+	Extra map[string]config.CustomField `json:"extra" gorm:"-"`
+
+	// productLoaded 标记商品属性已经加载过（侧表批量回调或 AfterFind 单条）。
+	// 非导出字段：不参与 JSON、不被 GORM 扫描，只在一次查询的生命周期内有效。
+	productLoaded bool `json:"-" gorm:"-"`
+}
+
+type ArchiveData struct {
+	Id      int64  `json:"id" gorm:"column:id;type:bigint(20) unsigned not null AUTO_INCREMENT;primaryKey"`
+	Content string `json:"content" gorm:"column:content;type:longtext default null"`
+}
+
+// ArchiveDraft
+// 表结构和 archives一致，但是存放的是草稿，已删除的文章，待发布的文章，用于发布时，将数据复制到 archives 表
+// 所有文章的ID都从ArchiveDraft中生成
+type ArchiveDraft struct {
+	Archive
+	Status uint `json:"status" gorm:"column:status;type:tinyint(1) unsigned not null;default:0"`
+}
+
+func (a *ArchiveDraft) BeforeCreate(tx *gorm.DB) (err error) {
+	if a.Id == 0 {
+		a.Id = GetNextArchiveId(tx, false)
+	}
+	return
+}
+
+type NextArchiveId struct {
+	Id        int64 `json:"-"`
+	QueryTime int64 `json:"-"`
+}
+
+var nextArchiveIdStore = sync.Mutex{}
+
+// GetNextArchiveId
+// ArchiveId 同时检查 archives表和archive_drafts表
+// 每次获取，自动加 1
+func GetNextArchiveId(tx *gorm.DB, forceUpdate bool) int64 {
+	plugin := tx.Config.Plugins["nextArchiveId"]
+	pluginNext, _ := plugin.(*NextArchiveIdPlugin)
+	nextArchiveIdStore.Lock()
+	defer nextArchiveIdStore.Unlock()
+	// 仅缓存60秒
+	nextArchiveId, nextTime := pluginNext.GetId()
+	if nextTime+60 > time.Now().Unix() {
+		nextArchiveId += 1
+		if forceUpdate {
+			nextTime = time.Now().Unix()
+		}
+		_ = pluginNext.SetId(nextArchiveId, nextTime)
+
+		return nextArchiveId
+	}
+	// 从数据库读取
+	var lastId int64
+	tx.Model(Archive{}).Order("id desc").Limit(1).Pluck("id", &lastId)
+	var lastIdTmp int64
+	tx.Model(ArchiveDraft{}).Order("id desc").Limit(1).Pluck("id", &lastIdTmp)
+	if lastId < lastIdTmp {
+		lastId = lastIdTmp
+	}
+	// 下一个ID
+	nextArchiveId = lastId + 1
+	_ = pluginNext.SetId(nextArchiveId, time.Now().Unix()+60)
+
+	return nextArchiveId
+}
+
+func (a *Archive) AddViews(db *gorm.DB) error {
+	db.Model(&Archive{}).Where("`id` = ?", a.Id).UpdateColumn("views", gorm.Expr("`views` + 1"))
+	return nil
+}
+
+func (a *Archive) GetThumb(storageUrl, defaultThumb string) string {
+	//取第一张
+	if len(a.Images) > 0 {
+		for i := range a.Images {
+			if !strings.HasPrefix(a.Images[i], "http") && !strings.HasPrefix(a.Images[i], "//") {
+				a.Images[i] = storageUrl + "/" + strings.TrimPrefix(a.Images[i], "/")
+			}
+		}
+		a.Logo = a.Images[0]
+		if strings.HasPrefix(a.Logo, storageUrl) && !strings.HasSuffix(a.Logo, ".svg") {
+			paths, fileName := filepath.Split(a.Logo)
+			a.Thumb = paths + "thumb_" + fileName
+		} else {
+			a.Thumb = a.Logo
+		}
+	} else if defaultThumb != "" {
+		a.Logo = defaultThumb
+		if !strings.HasPrefix(a.Logo, "http") && !strings.HasPrefix(a.Logo, "//") {
+			a.Logo = storageUrl + "/" + strings.TrimPrefix(a.Logo, "/")
+		}
+		paths, fileName := filepath.Split(a.Logo)
+		a.Thumb = paths + "thumb_" + fileName
+	}
+
+	return a.Thumb
+}
+
+type NextArchiveIdPlugin struct {
+	Id        int64 `json:"-"`
+	QueryTime int64 `json:"-"`
+}
+
+func (n *NextArchiveIdPlugin) Name() string {
+	return "nextArchiveId"
+}
+
+func (n *NextArchiveIdPlugin) Initialize(*gorm.DB) error {
+	return nil
+}
+
+func (n *NextArchiveIdPlugin) SetId(id int64, nextTime int64) (err error) {
+	n.Id = id
+	n.QueryTime = nextTime
+
+	return nil
+}
+
+func (n *NextArchiveIdPlugin) GetId() (int64, int64) {
+	return n.Id, n.QueryTime
+}

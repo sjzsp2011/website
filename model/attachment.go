@@ -1,0 +1,91 @@
+package model
+
+import (
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"gorm.io/gorm"
+)
+
+type Attachment struct {
+	Id           uint   `json:"id" gorm:"column:id;type:int(10) unsigned not null AUTO_INCREMENT;primaryKey"`
+	CreatedTime  int64  `json:"created_time" gorm:"column:created_time;type:bigint(20);autoCreateTime;index:idx_created_time"`
+	UpdatedTime  int64  `json:"updated_time" gorm:"column:updated_time;type:bigint(20);autoUpdateTime;index:idx_updated_time"`
+	UserId       uint   `json:"user_id" gorm:"column:user_id;type:int(10) unsigned not null;default:0;index"`
+	FileName     string `json:"file_name" gorm:"column:file_name;type:varchar(250) not null;default:''"`
+	FileLocation string `json:"file_location" gorm:"column:file_location;type:varchar(250) not null;default:''"`
+	FileSize     int64  `json:"file_size" gorm:"column:file_size;type:bigint(20) unsigned not null;default:0"`
+	FileMd5      string `json:"file_md5" gorm:"column:file_md5;type:varchar(32) not null;default:'';unique"`
+	Width        int    `json:"width" gorm:"column:width;type:int(10) unsigned not null;default:0"`
+	Height       int    `json:"height" gorm:"column:height;type:int(10) unsigned not null;default:0"`
+	CategoryId   uint   `json:"category_id" gorm:"column:category_id;type:int(10) unsigned not null;default:0;index:idx_category_id"`
+	IsImage      int    `json:"is_image" gorm:"column:is_image;type:tinyint(1) not null;default:0"` // 1 = 图片， 2 = 视频 其它未定义
+	Status       uint   `json:"status" gorm:"column:status;type:tinyint(1) unsigned not null;default:0;index:idx_status"`
+	Watermark    uint   `json:"watermark" gorm:"column:watermark;type:tinyint(1) not null;default:0"`
+	IsRemote     int    `json:"is_remote" gorm:"column:is_remote;type:tinyint(1) not null;default:0"`
+	Logo         string `json:"logo" gorm:"column:logo;type:varchar(250) not null;default:''"`
+	Thumb        string `json:"thumb" gorm:"-"`
+	FilePath     string `json:"file_path" gorm:"-"`
+}
+
+func (attachment *Attachment) BeforeSave(tx *gorm.DB) error {
+	if utf8.RuneCountInString(attachment.FileName) > 250 {
+		attachment.FileName = string([]rune(attachment.FileName)[:250])
+	}
+	return nil
+}
+
+func (attachment *Attachment) AfterFind(tx *gorm.DB) error {
+	// 兼容旧数据
+	if strings.HasPrefix(attachment.FileLocation, "20") {
+		attachment.FileLocation = "uploads/" + attachment.FileLocation
+		tx.Model(attachment).UpdateColumn("file_location", attachment.FileLocation)
+	}
+	return nil
+}
+
+func (attachment *Attachment) GetThumb(storageUrl string) {
+	attachment.FilePath = storageUrl + "/" + attachment.FileLocation
+	// 如果不是图片
+	if attachment.IsImage == 0 && attachment.Logo == "" {
+		attachment.Logo = storageUrl + "/" + attachment.FileLocation
+		if strings.HasSuffix(attachment.FileLocation, ".svg") {
+			attachment.Thumb = attachment.Logo
+		}
+		return
+	}
+	//如果是一个远程地址，则缩略图和原图地址一致
+	if attachment.Logo == "" || attachment.IsRemote == 1 {
+		attachment.Logo = attachment.FileLocation
+	}
+	if !strings.HasPrefix(attachment.Logo, "http") && !strings.HasPrefix(attachment.Logo, "//") {
+		// 兼容旧数据
+		if strings.HasPrefix(attachment.FileLocation, "20") {
+			attachment.FileLocation = "uploads/" + attachment.FileLocation
+			attachment.Logo = attachment.FileLocation
+		}
+		attachment.Logo = storageUrl + "/" + strings.TrimPrefix(attachment.Logo, "/")
+	}
+	if strings.HasPrefix(attachment.Logo, storageUrl) && !strings.HasSuffix(attachment.Logo, ".svg") {
+		paths, fileName := filepath.Split(attachment.Logo)
+		attachment.Thumb = paths + "thumb_" + fileName
+	} else {
+		attachment.Thumb = attachment.Logo
+	}
+}
+
+func (attachment *Attachment) Save(db *gorm.DB) error {
+	var err error
+	if attachment.Id > 0 {
+		if err = db.Updates(attachment).Error; err != nil {
+			return err
+		}
+	} else {
+		if err = db.Save(attachment).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

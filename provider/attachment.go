@@ -1,0 +1,1426 @@
+package provider
+
+import (
+	"bytes"
+	"crypto/md5"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
+	"io"
+	"log"
+	"math"
+	"math/rand"
+	"mime/multipart"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/image/tiff"
+
+	"github.com/h2non/filetype"
+	"github.com/parnurzeal/gorequest"
+	"golang.org/x/image/webp"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/response"
+)
+
+// imageMagickPath 检测Imagemagick是否可用
+var imageMagickPath string
+var webpPath string
+var pngquantPath string
+var ffmpegPath string
+
+// allowedAttachmentExt 附件上传的扩展名白名单（含前导点、全小写）。
+//
+// 为什么是白名单：2026-10-31 本站 uploads 目录被写入 shell.php5 与 s2.phtml。
+// 旧实现用 `fileExt == ".php" || fileExt == ".jsp"` 拦截，但 php-fpm 能解析的后缀
+// 远不止这两个（.php3 .php4 .php5 .php7 .phtml .pht .phar 都算），黑名单漏一个
+// 就是一次 RCE；白名单漏一个只是误拒一个业务类型，后者可发现、可回滚。
+//
+// 维护约定：新增业务类型改这里，并同步 attachment_ext_test.go 的正向表。
+// 两张表要一起动 —— 测试变红是为了让人停一下，确认「这个后缀真的不可执行」。
+var allowedAttachmentExt = map[string]bool{
+	// 图片
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".avif": true, ".tiff": true, ".tif": true, ".bmp": true, ".ico": true,
+	".svg": true, ".heic": true,
+	// 视频
+	".mp4": true, ".webm": true, ".mov": true, ".avi": true, ".mkv": true,
+	".flv": true, ".wmv": true, ".m4v": true,
+	// 音频
+	".mp3": true, ".wav": true, ".m4a": true, ".aac": true, ".ogg": true, ".flac": true,
+	// 文档
+	".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+	".ppt": true, ".pptx": true, ".txt": true, ".csv": true, ".md": true,
+	".json": true, ".xml": true,
+	// 压缩包
+	".zip": true, ".rar": true, ".7z": true, ".gz": true, ".tar": true, ".bz2": true,
+	// 字体：标题配图只支持 .ttf，是既有业务依赖
+	".ttf": true, ".otf": true, ".woff": true, ".woff2": true, ".eot": true,
+}
+
+// normalizeExt 把扩展名归一成「带前导点的小写形式」，供各条白名单共用。
+// 空串原样返回空串（调用方一律视为不允许）。
+func normalizeExt(fileExt string) string {
+	ext := strings.ToLower(strings.TrimSpace(fileExt))
+	if ext == "" {
+		return ""
+	}
+	if !strings.HasPrefix(ext, ".") {
+		ext = "." + ext
+	}
+	return ext
+}
+
+// IsAllowedAttachmentExt 判断附件扩展名是否在白名单内。
+// 入参可带或不带前导点，大小写不敏感；空串、"."、".." 一律视为不允许。
+func IsAllowedAttachmentExt(fileExt string) bool {
+	ext := normalizeExt(fileExt)
+	if ext == "" {
+		return false
+	}
+	return allowedAttachmentExt[ext]
+}
+
+func (w *Website) AttachmentUpload(file multipart.File, info *multipart.FileHeader, categoryId uint, attachId, userId uint) (*model.Attachment, error) {
+	db := w.DB
+
+	file.Seek(0, 0)
+	kind, err := filetype.MatchReader(file)
+	file.Seek(0, 0)
+	fileExt := "." + kind.Extension
+	if err != nil || kind == filetype.Unknown || kind.MIME.Type == "video" {
+		fileExt = strings.ToLower(filepath.Ext(info.Filename))
+	}
+	if !IsAllowedAttachmentExt(fileExt) {
+		return nil, errors.New(w.Tr("NotAllowedToUploadThisFileType"))
+	}
+	if fileExt == ".jpeg" {
+		fileExt = ".jpg"
+	}
+	if fileExt == ".ico" || fileExt == ".bmp" {
+		fileExt = ".png"
+	}
+	isImage := 0
+	if fileExt == ".jpg" || fileExt == ".png" || fileExt == ".gif" || fileExt == ".webp" || fileExt == ".avif" || fileExt == ".tiff" {
+		isImage = 1
+	}
+
+	var attachment *model.Attachment
+	if attachId > 0 {
+		attachment, err = w.GetAttachmentById(attachId)
+		if err != nil {
+			return nil, errors.New(w.Tr("TheImageResourceToBeReplacedDoesNotExist"))
+		}
+		isImage = attachment.IsImage
+	}
+
+	fileSize := info.Size
+	fileName := strings.TrimSuffix(info.Filename, path.Ext(info.Filename))
+	// 获取md5
+	md5hash := md5.New()
+	_, _ = file.Seek(0, 0)
+	_, err = io.Copy(md5hash, file)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = file.Seek(0, 0)
+	md5Str := hex.EncodeToString(md5hash.Sum(nil))
+	exists, _ := w.GetAttachmentByMd5(md5Str)
+	if attachment != nil {
+		if exists != nil && attachment.Id != exists.Id {
+			return nil, errors.New(w.Tr("ReplacementFailedCurrentlyUploadedResourcesAlreadyExist"))
+		}
+		fileName = attachment.FileName
+		fileExt = filepath.Ext(attachment.FileLocation)
+		attachId = attachment.Id
+	} else if exists != nil {
+		attachment = exists
+		// 已存在
+		// 如果更换了分类
+		if categoryId > 0 && attachment.CategoryId != categoryId {
+			db.Model(attachment).UpdateColumn("category_id", categoryId)
+		}
+		fileName = attachment.FileName
+		fileExt = filepath.Ext(attachment.FileLocation)
+		attachId = attachment.Id
+	}
+	// 生成文件名
+	tmpName := md5Str[8:24] + fileExt
+	// 默认采用用户上传的文件名
+	// 只允许英文名使用,空格转换成-
+	if CheckContentIsEnglish(fileName) {
+		tmpName = strings.ReplaceAll(fileName, "%20", "-")
+		tmpName = strings.ReplaceAll(fileName, " ", "-")
+		tmpName = filepath.Base(strings.ToLower(tmpName))
+		// 不能超过 200个字符
+		if len(tmpName) > 200 {
+			tmpName = tmpName[0:200]
+		}
+		tmpName = tmpName + fileExt
+	}
+	filePath := time.Now().Format("uploads/200601/02/")
+	if attachId > 0 {
+		filePath = filepath.Dir(attachment.FileLocation) + "/"
+		tmpName = filepath.Base(attachment.FileLocation)
+	}
+	filePath = strings.ReplaceAll(filePath, "\\", "/")
+
+	// 不是图片的时候的处理方法
+	// avif 暂时不支持处理，因此直接保存
+	if isImage != 1 || fileExt == ".avif" {
+		fileSize = info.Size
+		_, _ = file.Seek(0, 0)
+		_, err = w.UploadFile(filePath+tmpName, file)
+		if err != nil {
+			return nil, err
+		}
+		// 处理视频，对视频进行提取缩略图处理，并保存到 logo 字段中
+		var logoPath string
+		// 检查是否为视频文件
+		videoExts := map[string]bool{
+			".mp4":  true,
+			".avi":  true,
+			".mov":  true,
+			".wmv":  true,
+			".flv":  true,
+			".mkv":  true,
+			".webm": true,
+		}
+		if videoExts[fileExt] {
+			isImage = 2
+			// 获取 ffmpeg 路径
+			ffmpegPath, err := getFfmpegPath()
+			if err == nil {
+				// 生成视频封面文件名
+				posterName := strings.TrimSuffix(tmpName, fileExt) + "_poster.jpg"
+				posterPath := filePath + posterName
+
+				// 处理不同存储类型的视频源
+				var videoInputPath string
+				var tmpVideoFile *os.File
+				var err error
+
+				if w.PluginStorage.StorageType != config.StorageTypeLocal && w.PluginStorage.KeepLocal == false {
+					// 存储不在本地且不保留本地副本，需要临时保存视频文件
+					tmpVideoFile, err = os.CreateTemp("", "video_*.tmp")
+					if err != nil {
+						fmt.Printf("Failed to create temp video file: %v\n", err)
+						// 继续执行，不影响视频上传
+					} else {
+						defer func() {
+							_ = tmpVideoFile.Close()
+							_ = os.Remove(tmpVideoFile.Name())
+						}()
+
+						// 重置文件指针到开头
+						if seeker, ok := file.(io.Seeker); ok {
+							_, _ = seeker.Seek(0, io.SeekStart)
+						}
+
+						// 复制文件内容到临时文件
+						_, err = io.Copy(tmpVideoFile, file)
+						if err != nil {
+							fmt.Printf("Failed to copy video to temp file: %v\n", err)
+							// 继续执行，不影响视频上传
+						} else {
+							// 重置临时文件指针到开头
+							_, _ = tmpVideoFile.Seek(0, io.SeekStart)
+							videoInputPath = tmpVideoFile.Name()
+						}
+					}
+				} else {
+					// 存储在本地或保留本地副本
+					videoInputPath = w.PublicPath + filePath + tmpName
+				}
+
+				if videoInputPath != "" {
+					// 构建 ffmpeg 命令：在第 1 秒提取一帧作为封面图
+					tmpPosterPath := w.PublicPath + posterPath
+					// 确保目录存在
+					_ = os.MkdirAll(filepath.Dir(tmpPosterPath), 0755)
+
+					cmd := exec.Command(ffmpegPath, "-i", videoInputPath, "-ss", "00:00:01", "-vframes", "1", "-y", tmpPosterPath)
+					var stderr bytes.Buffer
+					cmd.Stderr = &stderr
+					if err := cmd.Run(); err != nil {
+						// 提取封面图失败，记录错误但不影响视频上传
+						fmt.Printf("Failed to extract poster: %v, %s\n", err, stderr.String())
+					} else {
+						// 封面图提取成功
+						// 如果存储不在本地，需要上传封面图
+						if w.PluginStorage.StorageType != config.StorageTypeLocal {
+							posterFile, err := os.Open(tmpPosterPath)
+							if err == nil {
+								defer func() {
+									_ = posterFile.Close()
+								}()
+								_, err = w.UploadFile(posterPath, posterFile)
+								if err != nil {
+									fmt.Printf("Failed to upload poster: %v\n", err)
+									// 继续执行，不影响视频上传
+								} else {
+									logoPath = posterPath
+								}
+							} else {
+								fmt.Printf("Failed to open poster file: %v\n", err)
+							}
+						} else {
+							logoPath = posterPath
+						}
+
+						// 对封面图片生成缩略图
+						w.BuildThumb(posterPath)
+					}
+				}
+			}
+		} else if fileExt == ".avif" {
+			// 尝试使用 ImageMagick 处理 avif 文件
+			iMPath, _ := getImageMagickPath()
+			var buf []byte
+			_, _ = file.Seek(0, 0)
+			buf, _ = io.ReadAll(file)
+			if iMPath != "" {
+				args := []string{"-coalesce", "-resize"}
+				if w.Content.ThumbCrop == 0 {
+					// 等比缩放
+					args = append(args, strconv.Itoa(w.Content.ThumbWidth)+"x"+strconv.Itoa(w.Content.ThumbHeight))
+				} else if w.Content.ThumbCrop == 1 {
+					// 补白
+					args = append(args, strconv.Itoa(w.Content.ThumbWidth)+"x"+strconv.Itoa(w.Content.ThumbHeight), "-background", "white", "-extent", strconv.Itoa(w.Content.ThumbWidth)+"x"+strconv.Itoa(w.Content.ThumbHeight))
+				} else {
+					// 裁剪
+					args = append(args, fmt.Sprintf("%dx%d^", w.Content.ThumbWidth, w.Content.ThumbHeight), "-gravity", "center", "-extent", fmt.Sprintf("%dx%d", w.Content.ThumbWidth, w.Content.ThumbHeight))
+				}
+				buf2, err := processTempFileWithCmd(bytes.NewBuffer(buf), "avif", iMPath, args, nil)
+				if err == nil {
+					buf = buf2
+				}
+			}
+			// 保存为缩略图
+			thumbName := "thumb_" + tmpName
+			_, err = w.UploadFile(filePath+thumbName, bytes.NewReader(buf))
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		//文件上传完成
+		attachment = &model.Attachment{
+			UserId:       userId,
+			FileName:     fileName,
+			FileLocation: filePath + tmpName,
+			FileSize:     fileSize,
+			FileMd5:      md5Str,
+			CategoryId:   categoryId,
+			IsImage:      isImage,
+			Status:       1,
+			Logo:         logoPath,
+		}
+		attachment.Id = attachId
+		_ = attachment.Save(w.DB)
+		attachment.GetThumb(w.PluginStorage.StorageUrl)
+
+		return attachment, nil
+	}
+
+	// 是图片的时候的处理方法
+	//获取宽高
+	file.Seek(0, 0)
+	img, imgType, err := image.Decode(file)
+	file.Seek(0, 0)
+	if err != nil {
+		if strings.HasSuffix(info.Filename, "webp") {
+			img, err = webp.Decode(file)
+			file.Seek(0, 0)
+			if err != nil {
+				fmt.Println(w.Tr("UnableToObtainImageSize"))
+				return nil, err
+			}
+			imgType = "webp"
+		} else {
+			//无法获取图片尺寸
+			fmt.Println(w.Tr("UnableToObtainImageSize"))
+			return nil, err
+		}
+	}
+	imgType = strings.ToLower(imgType)
+	// 部分设备(如手机)拍摄的图片带有 EXIF 方向信息,
+	// 直接重新压缩会丢失该信息,导致图片在页面上显示方向错误(如旋转90度)
+	if imgType == "jpeg" {
+		_, _ = file.Seek(0, 0)
+		orientation := library.ReadJpegOrientation(file)
+		_, _ = file.Seek(0, 0)
+		if orientation > 1 {
+			img = library.FixImageOrientation(img, orientation)
+		}
+	}
+	width := img.Bounds().Dx()
+	height := img.Bounds().Dy()
+	if imgType == "jpeg" {
+		imgType = "jpg"
+	}
+	oriImgType := imgType
+	if imgType == "ico" || imgType == "bmp" {
+		imgType = "png"
+	}
+	//只允许上传jpg,jpeg,gif,png,webp
+	if imgType != "jpg" && imgType != "gif" && imgType != "png" && imgType != "webp" {
+		return nil, errors.New(w.Tr("UnsupportedImageFormatLog", imgType))
+	}
+
+	if attachId == 0 {
+		// gif 不转成 webp，因为使用的webp库还不支持
+		if w.Content.UseWebp == 1 && (imgType != "gif" || w.Content.ConvertGif == 1) {
+			imgType = "webp"
+		}
+		tmpName = md5Str[8:24] + "." + imgType
+	}
+
+	//如果图片宽度大于800，自动压缩到800, gif 不能处理
+	resizeWidth := w.Content.ResizeWidth
+	if resizeWidth == 0 {
+		//默认800
+		resizeWidth = 800
+	}
+	quality := w.Content.Quality
+	if quality == 0 {
+		// 默认质量是90
+		quality = config.DefaultQuality
+	}
+	if oriImgType == "jpg" {
+		j, err2 := library.NewQuality(file)
+		file.Seek(0, 0)
+		if err2 == nil {
+			if j.Quality() < quality {
+				quality = j.Quality()
+			}
+		}
+	}
+
+	if w.Content.ResizeImage == 1 && width > resizeWidth && imgType != "gif" {
+		img = library.Resize(img, resizeWidth, 0)
+		width = img.Bounds().Dx()
+		height = img.Bounds().Dy()
+	}
+	// 保存裁剪的图片
+	// 如果服务器安装了ImageMagick，则尝试使用ImageMagick裁剪gif
+	iMPath, _ := getImageMagickPath()
+	addWatermark := uint(0)
+	var buf []byte
+	if imgType == "gif" {
+		// gif 直接使用原始数据
+		_, _ = file.Seek(0, 0)
+		buf, _ = io.ReadAll(file)
+		if iMPath != "" {
+			args := []string{"-coalesce", "-layers", "Optimize"}
+			buf2, err := processTempFileWithCmd(bytes.NewBuffer(buf), imgType, iMPath, args, nil)
+			if err == nil {
+				buf = buf2
+			}
+		}
+	} else {
+		// 如果开启图片水印功能，则加水印,gif 不处理
+		if w.PluginWatermark.Open {
+			wm := w.NewWatermark(w.PluginWatermark)
+			if wm != nil {
+				img, err = wm.DrawWatermark(img)
+				if err == nil {
+					addWatermark = 1
+				}
+			}
+		}
+		buf, imgType, _ = encodeImage(img, imgType, quality)
+	}
+	fileSize = int64(len(buf))
+
+	// 上传原图
+	_, err = w.UploadFile(filePath+tmpName, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+
+	//生成宽度为250的缩略图
+	thumbName := "thumb_" + tmpName
+
+	if imgType == "gif" && iMPath != "" {
+		args := []string{"-coalesce", "-resize"}
+		if w.Content.ThumbCrop == 0 {
+			// 等比缩放
+			args = append(args, strconv.Itoa(w.Content.ThumbWidth)+"x"+strconv.Itoa(w.Content.ThumbHeight))
+		} else if w.Content.ThumbCrop == 1 {
+			// 补白
+			args = append(args, strconv.Itoa(w.Content.ThumbWidth)+"x"+strconv.Itoa(w.Content.ThumbHeight), "-background", "white", "-extent", strconv.Itoa(w.Content.ThumbWidth)+"x"+strconv.Itoa(w.Content.ThumbHeight))
+		} else {
+			// 裁剪
+			args = append(args, fmt.Sprintf("%dx%d^", w.Content.ThumbWidth, w.Content.ThumbHeight), "-gravity", "center", "-extent", fmt.Sprintf("%dx%d", w.Content.ThumbWidth, w.Content.ThumbHeight))
+		}
+		args = append(args, "-layers", "Optimize")
+		buf2, err := processTempFileWithCmd(bytes.NewBuffer(buf), imgType, iMPath, args, nil)
+		if err == nil {
+			buf = buf2
+		} else {
+			newImg := library.ThumbnailCrop(w.Content.ThumbWidth, w.Content.ThumbHeight, img, w.Content.ThumbCrop)
+			buf, _, _ = encodeImage(newImg, imgType, quality)
+		}
+	} else {
+		newImg := library.ThumbnailCrop(w.Content.ThumbWidth, w.Content.ThumbHeight, img, w.Content.ThumbCrop)
+		buf, _, _ = encodeImage(newImg, imgType, quality)
+	}
+
+	// 上传缩略图
+	_, err = w.UploadFile(filePath+thumbName, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+
+	//文件上传完成
+	attachment = &model.Attachment{
+		UserId:       userId,
+		FileName:     fileName,
+		FileLocation: filePath + tmpName,
+		FileSize:     fileSize,
+		FileMd5:      md5Str,
+		Width:        width,
+		Height:       height,
+		CategoryId:   categoryId,
+		IsImage:      isImage,
+		Watermark:    addWatermark,
+		Status:       1,
+	}
+	attachment.Id = attachId
+
+	err = attachment.Save(db)
+	if err != nil {
+		return nil, err
+	}
+	attachment.GetThumb(w.PluginStorage.StorageUrl)
+
+	return attachment, nil
+}
+
+func (w *Website) DownloadRemoteImage(src string, fileName string, replaceId uint) (*model.Attachment, error) {
+	resp, body, errs := gorequest.New().Set("referer", src).Timeout(15 * time.Second).Get(src).EndBytes()
+	if errs == nil {
+		//处理
+		contentType := strings.ToLower(resp.Header.Get("content-type"))
+		contentType = strings.Split(contentType, ";")[0]
+		if contentType == "image/jpeg" || contentType == "image/jpg" || contentType == "image/png" || contentType == "image/gif" || contentType == "image/webp" {
+			if fileName == "" {
+				fileName = "image"
+			}
+			fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName)) + "." + strings.Split(contentType, "/")[1]
+			//获取宽高
+			return w.SaveAttachmentFromBytes(body, fileName, replaceId)
+		} else {
+			return nil, errors.New(w.Tr("UnsupportedImageFormat"))
+		}
+	}
+
+	return nil, errs[0]
+}
+
+func (w *Website) SaveAttachmentFromBytes(body []byte, fileName string, replaceId uint) (*model.Attachment, error) {
+	tmpfile, err := os.CreateTemp("", "download")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmpfile.Name()) // clean up
+	defer tmpfile.Close()
+	if _, err := tmpfile.Write(body); err != nil {
+		return nil, err
+	}
+	tmpfile.Seek(0, 0)
+	fileHeader := &multipart.FileHeader{
+		Filename: filepath.Base(fileName),
+		Header:   nil,
+		Size:     int64(len(body)),
+	}
+
+	return w.AttachmentUpload(tmpfile, fileHeader, 0, replaceId, 0)
+}
+
+func (w *Website) AddRemoteUrls(urls []string, categoryId uint) error {
+	var err error
+	for _, item := range urls {
+		if strings.HasPrefix(item, "http") || strings.HasPrefix(item, "//") {
+			// 直接入库
+			fileName := strings.Split(strings.Split(filepath.Base(item), "?")[0], ".")[0]
+			splits := strings.Split(item, "|")
+			if len(splits) > 1 {
+				item = strings.TrimSpace(splits[0])
+				fileName = strings.TrimSpace(splits[1])
+			}
+			md5Str := library.Md5(item)
+
+			attachment := model.Attachment{
+				FileName:     fileName,
+				FileLocation: item,
+				FileSize:     0,
+				FileMd5:      md5Str,
+				CategoryId:   categoryId,
+				IsRemote:     1,
+				IsImage:      1,
+				Status:       1,
+			}
+			// 判断是否重复
+			exists, _ := w.GetAttachmentByMd5(md5Str)
+			if exists != nil {
+				continue
+			}
+
+			err2 := attachment.Save(w.DB)
+			if err2 != nil {
+				return err2
+			}
+		} else {
+			continue
+		}
+	}
+
+	return err
+}
+
+func (w *Website) GetAttachmentByMd5(md5 string) (*model.Attachment, error) {
+	db := w.DB
+	var attach model.Attachment
+
+	if err := db.Unscoped().Where("`file_md5` = ?", md5).First(&attach).Error; err != nil {
+		return nil, err
+	}
+
+	attach.GetThumb(w.PluginStorage.StorageUrl)
+
+	return &attach, nil
+}
+
+func (w *Website) GetAttachmentByFileLocation(fileLocation string) (*model.Attachment, error) {
+	db := w.DB
+	var attach model.Attachment
+
+	// 兼容外部数据
+	if strings.HasPrefix(fileLocation, "http") {
+		if err := db.Unscoped().Where("`file_location` = ?", fileLocation).First(&attach).Error; err == nil {
+			attach.GetThumb(w.PluginStorage.StorageUrl)
+			return nil, err
+		}
+	}
+
+	if strings.Index(fileLocation, "uploads/") > 0 {
+		fileLocation = fileLocation[strings.Index(fileLocation, "uploads/"):]
+	}
+	if err := db.Unscoped().Where("`file_location` = ?", fileLocation).First(&attach).Error; err != nil {
+		return nil, err
+	}
+
+	attach.GetThumb(w.PluginStorage.StorageUrl)
+
+	return &attach, nil
+}
+
+func (w *Website) GetAttachmentById(id uint) (*model.Attachment, error) {
+	db := w.DB
+	var attach model.Attachment
+
+	if err := db.Where("`id` = ?", id).First(&attach).Error; err != nil {
+		return nil, err
+	}
+
+	attach.GetThumb(w.PluginStorage.StorageUrl)
+
+	return &attach, nil
+}
+
+func (w *Website) DeleteAttachment(attach *model.Attachment) error {
+	// 删除文件
+	_ = w.DeleteFile(attach.FileLocation)
+	// 删除thumb
+	if attach.IsImage == 1 {
+		paths, fileName := filepath.Split(attach.FileLocation)
+		thumb := paths + "thumb_" + fileName
+		_ = w.DeleteFile(thumb)
+	}
+	// 删除poster
+	logo := strings.TrimPrefix(attach.Logo, w.PluginStorage.StorageUrl)
+	logo = strings.TrimPrefix(logo, "/")
+	if logo != "" && logo != attach.FileLocation {
+		_ = w.DeleteFile(logo)
+		// 删除thumb
+		paths, fileName := filepath.Split(logo)
+		thumb := paths + "thumb_" + fileName
+		_ = w.DeleteFile(thumb)
+	}
+
+	return w.DB.Unscoped().Delete(&attach).Error
+}
+
+func (w *Website) GetAttachmentList(categoryId uint, q string, isImage int, currentPage int, pageSize int) ([]*model.Attachment, int64, error) {
+	var attachments []*model.Attachment
+	offset := (currentPage - 1) * pageSize
+	var total int64
+
+	builder := w.DB.Model(&model.Attachment{})
+	if categoryId > 0 {
+		builder = builder.Where("`category_id` = ?", categoryId)
+	}
+	if isImage > 0 {
+		builder = builder.Where("`is_image` = ?", isImage)
+	}
+	if q != "" {
+		builder = builder.Where("`file_name` like ?", "%"+q+"%")
+	}
+	builder = builder.Where("`status` = 1").Order("updated_time desc")
+	if err := builder.Count(&total).Limit(pageSize).Offset(offset).Find(&attachments).Error; err != nil {
+		return nil, 0, err
+	}
+	for i := range attachments {
+		attachments[i].GetThumb(w.PluginStorage.StorageUrl)
+	}
+
+	return attachments, total, nil
+}
+
+func (w *Website) ThumbRebuild() {
+	db := w.DB
+	limit := 1000
+	var total int64
+	attachmentBuilder := db.Model(&model.Attachment{}).Where("`status` = 1").Order("id desc").Count(&total)
+	if total == 0 {
+		return
+	}
+
+	var attachments []*model.Attachment
+	pager := int(math.Ceil(float64(total) / float64(limit)))
+	for i := 1; i <= pager; i++ {
+		offset := (i - 1) * limit
+		err := attachmentBuilder.Limit(limit).Offset(offset).Scan(&attachments).Error
+		if err == nil {
+			for _, v := range attachments {
+				_ = w.BuildThumb(v.FileLocation)
+			}
+		}
+	}
+}
+
+func (w *Website) BuildThumb(fileLocation string) error {
+	originPath := w.PublicPath + fileLocation
+
+	paths, fileName := filepath.Split(fileLocation)
+	thumbPath := paths + "thumb_" + fileName
+
+	f, err := os.Open(originPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	img, imgType, err := image.Decode(f)
+	if err != nil {
+		f.Seek(0, 0)
+		img, err = webp.Decode(f)
+		if err != nil {
+			fmt.Println(w.Tr("UnableToObtainImageSize"))
+			return err
+		}
+		imgType = "webp"
+	}
+	if imgType == "jpeg" {
+		imgType = "jpg"
+	}
+	quality := w.Content.Quality
+	if quality == 0 {
+		// 默认质量是90
+		quality = config.DefaultQuality
+	}
+
+	newImg := library.ThumbnailCrop(w.Content.ThumbWidth, w.Content.ThumbHeight, img, w.Content.ThumbCrop)
+	buf, _, _ := encodeImage(newImg, imgType, quality)
+
+	_, err = w.UploadFile(thumbPath, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (w *Website) ChangeAttachmentCategory(categoryId uint, ids []uint) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	w.DB.Model(&model.Attachment{}).Where("`id` IN(?)", ids).UpdateColumn("category_id", categoryId)
+
+	return nil
+}
+
+func (w *Website) StartConvertImageToWebp() {
+	// 根据attachment表读取每一张图片
+	type replaced struct {
+		From string
+		To   string
+	}
+	lastId := uint(0)
+	limit := 500
+	for {
+		var attaches []model.Attachment
+		w.DB.Where("`id` > ?", lastId).Order("id asc").Limit(limit).Find(&attaches)
+		if len(attaches) == 0 {
+			break
+		}
+		lastId = attaches[len(attaches)-1].Id
+		var results = make([]replaced, 0, len(attaches))
+		for _, v := range attaches {
+			if !strings.HasSuffix(v.FileLocation, ".jpg") &&
+				!strings.HasSuffix(v.FileLocation, ".png") &&
+				!strings.HasSuffix(v.FileLocation, ".gif") {
+				// 只转换图片
+				continue
+			}
+			result := replaced{
+				From: "/" + v.FileLocation,
+			}
+			// 先转换图片
+			err := w.convertToWebp(&v)
+			if err == nil {
+				// 接着替换内容
+				// 替换 attachment file_location,上一步已经完成
+				result.To = "/" + v.FileLocation
+				results = append(results, result)
+			}
+		}
+		// 替换 category content,images,logo
+		var categories []model.Category
+		w.DB.Find(&categories)
+		for _, v := range categories {
+			update := false
+			for x := range results {
+				if strings.HasSuffix(v.Logo, results[x].From) {
+					v.Logo = strings.ReplaceAll(v.Logo, results[x].From, results[x].To)
+					update = true
+				}
+				if len(v.Images) > 0 {
+					for y := range v.Images {
+						if strings.HasSuffix(v.Images[y], results[x].From) {
+							v.Images[y] = strings.ReplaceAll(v.Images[y], results[x].From, results[x].To)
+							update = true
+						}
+					}
+				}
+				if strings.Contains(v.Content, results[x].From) {
+					v.Content = strings.ReplaceAll(v.Content, results[x].From, results[x].To)
+					update = true
+				}
+			}
+			if update {
+				w.DB.Updates(&v)
+			}
+		}
+		// 替换 archive logo,images
+		innerLastId := int64(0)
+		for {
+			var archives []model.Archive
+			w.DB.Where("`id` > ?", innerLastId).Order("id asc").Limit(1000).Find(&archives)
+			if len(archives) == 0 {
+				break
+			}
+			innerLastId = archives[len(archives)-1].Id
+			for _, v := range archives {
+				update := false
+				for x := range results {
+					if strings.HasSuffix(v.Logo, results[x].From) {
+						v.Logo = strings.ReplaceAll(v.Logo, results[x].From, results[x].To)
+						update = true
+					}
+					if len(v.Images) > 0 {
+						for y := range v.Images {
+							if strings.HasSuffix(v.Images[y], results[x].From) {
+								v.Images[y] = strings.ReplaceAll(v.Images[y], results[x].From, results[x].To)
+								update = true
+							}
+						}
+					}
+				}
+				if update {
+					w.DB.Updates(&v)
+				}
+			}
+		}
+		// 替换 archive_data content
+		innerLastId = 0
+		for {
+			var archiveData []model.ArchiveData
+			w.DB.Where("`id` > ?", innerLastId).Order("id asc").Limit(1000).Find(&archiveData)
+			if len(archiveData) == 0 {
+				break
+			}
+			innerLastId = archiveData[len(archiveData)-1].Id
+			for _, v := range archiveData {
+				update := false
+				for x := range results {
+					if strings.Contains(v.Content, results[x].From) {
+						v.Content = strings.ReplaceAll(v.Content, results[x].From, results[x].To)
+						update = true
+					}
+				}
+				if update {
+					w.DB.Updates(&v)
+				}
+			}
+		}
+		// 替换 comment content
+		innerLastId = 0
+		for {
+			var comments []model.Comment
+			w.DB.Where("`id` > ?", innerLastId).Order("id asc").Limit(1000).Find(&comments)
+			if len(comments) == 0 {
+				break
+			}
+			innerLastId = int64(comments[len(comments)-1].Id)
+			for _, v := range comments {
+				update := false
+				for x := range results {
+					if strings.Contains(v.Content, results[x].From) {
+						v.Content = strings.ReplaceAll(v.Content, results[x].From, results[x].To)
+						update = true
+					}
+				}
+				if update {
+					w.DB.Updates(&v)
+				}
+			}
+		}
+		// 替换 material content
+		innerLastId = 0
+		for {
+			var materials []model.Material
+			w.DB.Where("`id` > ?", innerLastId).Order("id asc").Limit(1000).Find(&materials)
+			if len(materials) == 0 {
+				break
+			}
+			innerLastId = int64(materials[len(materials)-1].Id)
+			for _, v := range materials {
+				update := false
+				for x := range results {
+					if strings.Contains(v.Content, results[x].From) {
+						v.Content = strings.ReplaceAll(v.Content, results[x].From, results[x].To)
+						update = true
+					}
+				}
+				if update {
+					w.DB.Updates(&v)
+				}
+			}
+		}
+		// 替换配置
+		update := false
+		for x := range results {
+			if w.System.SiteLogo == results[x].From {
+				w.System.SiteLogo = results[x].To
+				update = true
+			}
+			if w.Contact.Qrcode == results[x].From {
+				w.Contact.Qrcode = results[x].To
+				update = true
+			}
+			for i := range w.Content.DefaultThumbs {
+				if w.Content.DefaultThumbs[i] == results[x].From {
+					w.Content.DefaultThumbs[i] = results[x].To
+					update = true
+				}
+			}
+		}
+		if update {
+			_ = w.SaveSettingValue(SystemSettingKey, w.System)
+			_ = w.SaveSettingValue(ContactSettingKey, w.Contact)
+			_ = w.SaveSettingValue(ContentSettingKey, w.Content)
+
+		}
+	}
+
+	log.Println("finished convert to webp")
+}
+
+func (w *Website) convertToWebp(attachment *model.Attachment) error {
+	originPath := w.PublicPath + attachment.FileLocation
+	binPath, err := getWebpPath()
+	if err != nil {
+		return err
+	}
+	if strings.HasSuffix(originPath, ".webp") {
+		// 已经是webp，不需要处理
+		return nil
+	}
+	newFile := strings.TrimSuffix(attachment.FileLocation, filepath.Ext(attachment.FileLocation)) + ".webp"
+	newPath := w.PublicPath + newFile
+	quality := w.Content.Quality
+	if quality == 0 {
+		// 默认质量是90
+		quality = config.DefaultQuality
+	}
+	// 调用命令进行处理
+	err = library.RunCmd(binPath, originPath, "−quiet", "-q", strconv.Itoa(quality), "-o", newPath)
+	if err != nil {
+		return err
+	}
+	// 检查新生成的文件，并读取它
+	buf, err := os.ReadFile(newPath)
+	if err != nil {
+		return err
+	}
+	_, err = w.UploadFile(newFile, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+
+	// 回写
+	attachment.FileLocation = newFile
+	attachment.FileMd5 = library.Md5Bytes(buf)
+	w.DB.Save(attachment)
+
+	// 对缩略图进行处理
+	paths, fileName := filepath.Split(attachment.FileLocation)
+	thumbPath := w.PublicPath + paths + "thumb_" + fileName
+	newThumbPath := strings.TrimSuffix(thumbPath, filepath.Ext(thumbPath)) + ".webp"
+	err = library.RunCmd(binPath, thumbPath, "-q", strconv.Itoa(quality), "-o", newThumbPath)
+	if err != nil {
+		return err
+	}
+	// 检查新生成的文件，并读取它
+	buf, err = os.ReadFile(newThumbPath)
+	if err != nil {
+		return err
+	}
+	_, err = w.UploadFile(strings.TrimPrefix(newThumbPath, w.PublicPath), bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// AttachmentScanUploads 扫描上传目录，所有文件类型
+func (w *Website) AttachmentScanUploads(baseDir string) {
+	baseDir = strings.TrimRight(baseDir, "/\\")
+	files, err := os.ReadDir(baseDir)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	for _, fi := range files {
+		name := baseDir + "/" + fi.Name()
+		if fi.IsDir() {
+			// 排除 watermark and titleimage
+			if fi.Name() == "watermark" || fi.Name() == "titleimage" {
+				continue
+			}
+			w.AttachmentScanUploads(name)
+		} else {
+			// 是否是thumb
+			if strings.HasPrefix(fi.Name(), "thumb_") {
+				// 跳过
+				continue
+			}
+			// 跳过 .开头的文件
+			if strings.HasPrefix(fi.Name(), ".") {
+				continue
+			}
+			fileInfo, err := fi.Info()
+			if err != nil {
+				continue
+			}
+			var fileLocation = strings.TrimPrefix(name, w.PublicPath)
+			fileExt := filepath.Ext(fi.Name())
+			// 如果是图片，则生成缩略图
+			isImage := 0
+			if fileExt == ".jpg" || fileExt == ".png" || fileExt == ".gif" || fileExt == ".webp" {
+				isImage = 1
+				thumbName := baseDir + "/" + "thumb_" + fi.Name()
+				_, err = os.Stat(thumbName)
+				if err != nil {
+					// 不存在
+					_ = w.BuildThumb(fileLocation)
+				}
+			}
+
+			// 检查是否存在数据库
+			var exist model.Attachment
+			err = w.DB.Unscoped().Model(&model.Attachment{}).Where("`file_location` = ?", fileLocation).Take(&exist).Error
+			if err == nil {
+				continue
+			}
+			md5Str, err := library.Md5File(name)
+			if err != nil {
+				continue
+			}
+			//记录文件到数据库
+			attachment := &model.Attachment{
+				FileName:     fi.Name(),
+				FileLocation: fileLocation,
+				FileSize:     fileInfo.Size(),
+				FileMd5:      md5Str,
+				CategoryId:   0,
+				IsImage:      isImage,
+				Status:       1,
+			}
+			_ = attachment.Save(w.DB)
+		}
+	}
+}
+
+func (w *Website) GetRandImageFromCategory(categoryId int, title string) string {
+	var img string
+	// 根据分类每次只取其中一张
+	var attach model.Attachment
+	if categoryId >= 0 {
+		w.DB.Model(&model.Attachment{}).Where("category_id = ? and is_image = ?", categoryId, 1).Order("rand()").Limit(1).Take(&attach)
+	} else if categoryId == -1 {
+		// 全部图片，所以每次只取其中一张
+		w.DB.Model(&model.Attachment{}).Where("is_image = ?", 1).Order("rand()").Limit(1).Take(&attach)
+	} else if categoryId == -2 {
+		// 尝试关键词匹配图片名称
+		// 每次只取其中一张
+		// 先分词
+		keywordSplit := WordSplit(title, false)
+		// 查询attachment表，尝试匹配keywordSplit里的关键词
+		tx := w.DB.Model(&model.Attachment{}).Where("is_image = ?", 1)
+		var queries []string
+		var args []interface{}
+		for _, word := range keywordSplit {
+			queries = append(queries, "file_name like ?")
+			args = append(args, "%"+word+"%")
+		}
+		tx = tx.Where(strings.Join(queries, " OR "), args...)
+
+		tx.Order("rand()").Limit(1).Take(&attach)
+	}
+	if len(attach.FileLocation) > 0 {
+		img = w.PluginStorage.StorageUrl + "/" + attach.FileLocation
+	}
+
+	return img
+}
+
+func (w *Website) GetCategoryImages(categoryId int) []*response.TinyAttachment {
+	// 根据分类读取
+	var attaches []*response.TinyAttachment
+	if categoryId >= 0 {
+		w.DB.Model(&model.Attachment{}).Where("category_id = ? and is_image = ?", categoryId, 1).Order("rand()").Scan(&attaches)
+	} else {
+		// 全部图片
+		w.DB.Model(&model.Attachment{}).Where("is_image = ?", 1).Scan(&attaches)
+	}
+	for i := range attaches {
+		attaches[i].FileLocation = w.PluginStorage.StorageUrl + "/" + attaches[i].FileLocation
+	}
+	// 对attaches 进行随机打乱
+	rand.Shuffle(len(attaches), func(i, j int) {
+		attaches[i], attaches[j] = attaches[j], attaches[i]
+	})
+
+	return attaches
+}
+
+func encodeImage(img image.Image, imgType string, quality int) ([]byte, string, error) {
+	// 如果 quality 为 0，则使用默认值
+	if quality == 0 {
+		quality = config.DefaultQuality
+	}
+
+	var buf bytes.Buffer
+	realType := imgType
+
+	// 先将图片编码到 buf，根据图片类型进行不同处理
+	switch imgType {
+	case "jpg":
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+			return nil, imgType, err
+		}
+		// jpg 图片无需后续压缩，直接返回
+		return buf.Bytes(), imgType, nil
+
+	case "gif":
+		if err := gif.Encode(&buf, img, nil); err != nil {
+			return nil, imgType, err
+		}
+	case "tiff":
+		if err := tiff.Encode(&buf, img, nil); err != nil {
+			return nil, imgType, err
+		}
+
+	default:
+		// 其它图片类型先尝试转换为 png
+		if err := png.Encode(&buf, img); err != nil {
+			// 如果 png 编码失败，尝试转换成 jpg（先填充白色背景）
+			newImg := image.NewRGBA(img.Bounds())
+			draw.Draw(newImg, newImg.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+			draw.Draw(newImg, newImg.Bounds(), img, img.Bounds().Min, draw.Over)
+			if err = jpeg.Encode(&buf, newImg, &jpeg.Options{Quality: quality}); err != nil {
+				return nil, imgType, err
+			}
+			realType = "jpg"
+		} else {
+			realType = "png"
+		}
+	}
+
+	// 如果目标类型是 webp，使用 libwebp 处理
+	if imgType == "webp" {
+		binPath, err := getWebpPath()
+		if err == nil {
+			// 调用 helper，指定输出后缀为 webp，传入 webp 的相关参数
+			if data, err := processTempFileWithCmd(&buf, realType, binPath, []string{"-q", strconv.Itoa(quality), "-o"}, []string{"-quiet"}); err == nil {
+				return data, imgType, nil
+			}
+		}
+		// 出错则退化返回原先的结果
+		return buf.Bytes(), realType, nil
+	}
+
+	// 对于 gif 和 png，尝试用 ImageMagick 优化（如果可用）
+	if imPath, err := getImageMagickPath(); err == nil {
+		// 如果是 png，先尝试用 pngquant 进一步压缩
+		if imgType == "png" {
+			if pngquant, err := getPngquantPath(); err == nil {
+				minQuality := quality - 30
+				if minQuality < 10 {
+					minQuality = 10
+				}
+				args := []string{"--force", "--skip-if-larger", "--strip", "--quality", fmt.Sprintf("%d-%d", minQuality, quality), "-o"}
+				if data, err := processTempFileWithCmd(&buf, imgType, pngquant, args, nil); err == nil {
+					return data, imgType, nil
+				}
+			}
+		}
+		// ImageMagick 处理：对于 gif 使用 "-layers Optimize"，其它类型额外加上 "-strip", "-quality", "-depth"
+		var args []string
+		if imgType == "gif" {
+			args = []string{"-coalesce", "-layers", "Optimize"}
+		} else {
+			args = []string{"-strip", "-quality", strconv.Itoa(quality), "-depth", "8"}
+		}
+		if data, err := processTempFileWithCmd(&buf, imgType, imPath, args, nil); err == nil {
+			return data, imgType, nil
+		}
+	}
+
+	// 所有处理都失败，则返回初步编码的结果
+	return buf.Bytes(), imgType, nil
+}
+
+// processTempFileWithCmd 封装了将 buf 写入临时文件、调用外部命令处理、读取处理结果的逻辑。
+// 参数说明：
+// - buf：图片数据缓冲区。
+// - tempExt：临时文件的扩展名（即原始编码格式）。
+// - cmdPath：外部命令路径（如 libwebp、pngquant、ImageMagick）。
+// - args：传递给外部命令的参数（注意不含输入文件路径和输出参数）。
+func processTempFileWithCmd(buf *bytes.Buffer, tempExt, cmdPath string, args []string, prefixArgs []string) ([]byte, error) {
+	// 创建临时文件，文件名后缀为 tempExt
+	tmpFile, err := os.CreateTemp("", "*."+tempExt)
+	if err != nil {
+		return nil, err
+	}
+	// 确保临时文件关闭并删除
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+	}()
+	// 将缓冲区数据写入临时文件
+	if _, err = tmpFile.Write(buf.Bytes()); err != nil {
+		return nil, err
+	}
+	_ = tmpFile.Close()
+
+	// 构造输出文件名
+	outName := tmpFile.Name() + ".new"
+
+	// 拼接命令参数：第一个参数为输入文件路径，后续参数、最后输出文件路径
+	fullArgs := append([]string{tmpFile.Name()}, args...)
+	if len(prefixArgs) > 0 {
+		fullArgs = append(prefixArgs, fullArgs...)
+	}
+	fullArgs = append(fullArgs, outName)
+
+	// 调用外部命令进行处理
+	if err = library.RunCmd(cmdPath, fullArgs...); err != nil {
+		log.Println("processTempFileWithCmd error:", err)
+		return nil, err
+	}
+
+	// 检查输出文件是否生成，并读取之
+	data, err := os.ReadFile(outName)
+	if err != nil {
+		log.Println("processTempFileWithCmd error:", err)
+		return nil, err
+	}
+	_ = os.Remove(outName)
+	return data, err
+}
+
+// UploadByChunks 分片上传处理函数
+func (w *Website) UploadByChunks(file multipart.File, fileMd5 string, chunk, chunks int) (*os.File, error) {
+	// 临时文件保存6小时
+	maxAge := 6 * time.Hour
+	// 打开临时文件夹
+	tmpDir := w.CachePath + "tmp"
+	// 检查并创建文件夹
+	_, err := os.Stat(tmpDir)
+	if err != nil && os.IsNotExist(err) {
+		_ = os.MkdirAll(tmpDir, os.ModePerm)
+	}
+	// 清理过期的分片文件
+	_ = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if info.ModTime().Add(maxAge).Before(time.Now()) {
+			_ = os.Remove(path)
+		}
+		return nil
+	})
+	// 开始写入临时文件
+	buf, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	tmpName := library.Md5(fileMd5) + "_" + strconv.Itoa(chunk) + ".part"
+	err = os.WriteFile(tmpDir+"/"+tmpName, buf, os.ModePerm)
+	if err != nil {
+		return nil, err
+	}
+	// 验证分片是否全部上传完毕
+	done := true
+	for i := 0; i < chunks; i++ {
+		tmpPart := tmpDir + "/" + library.Md5(fileMd5) + "_" + strconv.Itoa(i) + ".part"
+		if _, err = os.Stat(tmpPart); err != nil && os.IsNotExist(err) {
+			done = false
+			break
+		}
+	}
+
+	if done {
+		// 将文件写入到临时文件
+		tmpFile, err := os.CreateTemp(tmpDir, "upload_")
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < chunks; i++ {
+			tmpPart := tmpDir + "/" + library.Md5(fileMd5) + "_" + strconv.Itoa(i) + ".part"
+			buf2, err2 := os.ReadFile(tmpPart)
+			if err2 != nil {
+				_ = tmpFile.Close()
+				return nil, err2
+			}
+			_, err = tmpFile.Write(buf2)
+			if err != nil {
+				_ = tmpFile.Close()
+				return nil, err
+			}
+			_ = os.Remove(tmpPart)
+		}
+
+		return tmpFile, nil
+	}
+
+	return nil, nil
+}
+
+func getImageMagickPath() (string, error) {
+	if imageMagickPath != "" {
+		return imageMagickPath, nil
+	}
+	// 同时检查 Imagemagick 7 和 Imagemagick 6
+	filePath, err := exec.LookPath("magick")
+	if err != nil {
+		filePath, err = exec.LookPath("convert")
+		if err != nil {
+			return "", err
+		}
+	}
+	imageMagickPath = filePath
+	return imageMagickPath, nil
+}
+
+// 检查系统安装的pngquant，如果存在，则返回路径
+// pngquant 不内置，需要自行安装
+func getPngquantPath() (string, error) {
+	if pngquantPath != "" {
+		return pngquantPath, nil
+	}
+	filePath, err := exec.LookPath("pngquant")
+	if err != nil {
+		return "", err
+	}
+	pngquantPath = filePath
+	return pngquantPath, nil
+}
+
+func getWebpPath() (string, error) {
+	if webpPath != "" {
+		return webpPath, nil
+	}
+	goos := runtime.GOOS
+	arch := runtime.GOARCH
+	binName := "cwebp_" + goos + "_" + arch
+	if goos == "windows" {
+		binName += ".exe"
+	}
+	binPath := config.ExecPath + "source/" + binName
+	if info, err := os.Stat(binPath); err != nil {
+		if os.IsNotExist(err) {
+			// 尝试坚持系统安装的 cwebp
+			binPath, err = exec.LookPath("cwebp")
+			if err != nil {
+				return "", err
+			}
+		} else {
+			// 检查binPath的权限，没有执行权限就添加
+			currentPerm := info.Mode().Perm()
+			if currentPerm&0100 != 0 {
+				newPerm := currentPerm | 0100
+				err = os.Chmod(binPath, newPerm)
+				if err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	webpPath = binPath
+	return webpPath, nil
+}
+
+func getFfmpegPath() (string, error) {
+	if ffmpegPath != "" {
+		return ffmpegPath, nil
+	}
+	// 尝试查找系统安装的 ffmpeg
+	binPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg not found: %w", err)
+	}
+	// 验证 ffmpeg 是否可用
+	var stderr bytes.Buffer
+	cmd := exec.Command(binPath, "-version")
+	cmd.Stderr = &stderr
+	if err = cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg not usable: %w, %s", err, stderr.String())
+	}
+	ffmpegPath = binPath
+	return ffmpegPath, nil
+}

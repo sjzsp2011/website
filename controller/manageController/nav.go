@@ -1,0 +1,307 @@
+package manageController
+
+import (
+	"github.com/kataras/iris/v12"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider"
+	"kandaoni.com/anqicms/request"
+)
+
+// SettingNav 查询指定导航分组下的导航项。
+//
+// 参数说明：
+//   - 查询参数 "type_id": 导航分组 ID，默认为 1。
+func SettingNav(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	typeId := uint(ctx.URLParamIntDefault("type_id", 1))
+	navList, _ := currentSite.GetNavList(typeId, "children")
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": navList,
+	})
+}
+
+// SettingNavForm 保存导航配置项，会同步更新多语言子站。
+func SettingNavForm(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.NavConfig
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// UpdateAll 决定「未传的字段」怎么处理：
+	//   true  —— 全量覆盖。未传=零值的字段会被清空。这是**表单提交**的语义：
+	//            前端提交整个表单，某个字段没出现在表单里就意味着用户清空了它。
+	//   false —— PATCH 语义。只覆盖显式传入的字段，未传的一律保持库里的原值。
+	//            这是 **AI/程序化调用**需要的语义：只想改标题，不该动其它字段。
+	//
+	// 用 Partial（反向开关）而非直接暴露 UpdateAll，是为了区分「调用方没传这个字段」
+	// 与「调用方显式传了 false」——Go 的 bool 零值做不到，前端又不传该字段。
+	// Partial 优先于调用方传的 update_all。
+	if !req.Partial {
+		req.UpdateAll = true
+	}
+	nav, err := currentSite.SaveNav(&req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 插入记录
+				if req.Id == 0 {
+					req.Id = nav.Id
+					subNav, err := subSite.SaveNav(&req)
+					if err == nil {
+						// 同步成功，进行翻译
+						if currentSite.MultiLanguage.AutoTranslate {
+							transReq := &provider.AnqiTranslateTextRequest{
+								Text: []string{
+									subNav.Title,       // 0
+									subNav.Description, // 1
+									subNav.SubTitle,    // 2
+								},
+								Language:   currentSite.System.Language,
+								ToLanguage: subSite.System.Language,
+							}
+							res, err := currentSite.AnqiTranslateString(transReq)
+							if err == nil {
+								// 只处理成功的结果
+								subSite.DB.Model(subNav).UpdateColumns(map[string]interface{}{
+									"title":       res.Text[0],
+									"description": res.Text[1],
+									"sub_title":   res.Text[2],
+								})
+							}
+						}
+					}
+				} else {
+					// 修改的话，就排除 title, content，description，keywords 字段
+					tmpNav, err := subSite.GetNavById(req.Id)
+					if err == nil {
+						req.Title = tmpNav.Title
+						req.SubTitle = library.Ptr(tmpNav.SubTitle)
+						req.Description = library.Ptr(tmpNav.Description)
+					}
+					_, _ = subSite.SaveNav(&req)
+				}
+			}
+		}
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateNavigationLog", nav.Id, nav.Title))
+
+	currentSite.DeleteCacheNavs()
+	currentSite.DeleteCacheIndex()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("ConfigurationUpdated"),
+		"data": nav,
+	})
+}
+
+// SettingNavDelete 删除指定导航项。
+func SettingNavDelete(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.DeleteNavRequest
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	nav, err := currentSite.GetNavById(req.Id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	err = nav.Delete(currentSite.DB)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 同步删除
+				_ = nav.Delete(subSite.DB)
+			}
+		}
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("DeleteNavigationLog", nav.Id, nav.Title))
+
+	currentSite.DeleteCacheNavs()
+	currentSite.DeleteCacheIndex()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("NavigationDeleted"),
+	})
+}
+
+// SettingNavType 查询导航分组列表。
+func SettingNavType(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	navTypes, _ := currentSite.GetNavTypeList()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": navTypes,
+	})
+}
+
+// SettingNavTypeForm 新建或更新导航分组。
+func SettingNavTypeForm(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.NavTypeRequest
+	if !readJSONPayload(ctx, &req) {
+		return
+	}
+	// 传了 id 说明是修改，记录不存在时必须报错，不能顺手新建一条带该 id 的记录。
+	if req.Id > 0 {
+		if _, err := currentSite.GetNavTypeById(req.Id); err != nil {
+			ctx.JSON(iris.Map{"code": config.StatusFailed, "msg": err.Error()})
+			return
+		}
+	}
+
+	navType, err := currentSite.SaveNavType(&req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 插入记录
+				if req.Id == 0 {
+					req.Id = navType.Id
+					_, _ = subSite.SaveNavType(&req)
+				} else {
+					// 修改的话，就排除 title, content，description，keywords 字段
+					tmpNav, err := subSite.GetNavById(req.Id)
+					if err == nil {
+						req.Title = tmpNav.Title
+					}
+					_, _ = subSite.SaveNavType(&req)
+				}
+			}
+		}
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateNavigationCategoryLog", navType.Id, navType.Title))
+
+	currentSite.DeleteCacheNavs()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("ConfigurationUpdated"),
+	})
+}
+
+// SettingNavTypeDelete 删除指定导航分组，默认分组不允许删除。
+func SettingNavTypeDelete(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.NavTypeRequest
+	if !readJSONPayload(ctx, &req) {
+		return
+	}
+	if !requirePositive(ctx, req.Id, "id") {
+		return
+	}
+	navType, err := currentSite.GetNavTypeById(req.Id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	if navType.Id == 1 {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("DeleteDefaultCategoryIsNotAllowed"),
+		})
+		return
+	}
+
+	// 删除更多信息
+	// 删除一类导航
+	currentSite.DB.Where("`type_id` = ?", navType).Delete(&model.Nav{})
+	err = currentSite.DB.Delete(navType).Error
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 同步删除
+				// 删除一类导航
+				subSite.DB.Where("`type_id` = ?", navType).Delete(&model.Nav{})
+				subSite.DB.Delete(navType)
+			}
+		}
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("DeleteNavigationCategoryLog", navType.Id, navType.Title))
+
+	currentSite.DeleteCacheNavs()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("NavigationCategoryHasBeenDeleted"),
+	})
+}

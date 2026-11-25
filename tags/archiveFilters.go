@@ -1,0 +1,160 @@
+package tags
+
+import (
+	"fmt"
+
+	"github.com/flosch/pongo2/v6"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider"
+	"kandaoni.com/anqicms/request"
+)
+
+type tagArchiveFiltersNode struct {
+	name    string
+	args    map[string]pongo2.IEvaluator
+	wrapper *pongo2.NodeWrapper
+}
+
+func (node *tagArchiveFiltersNode) Execute(ctx *pongo2.ExecutionContext, writer pongo2.TemplateWriter) *pongo2.Error {
+	currentSite, _ := ctx.Public["website"].(*provider.Website)
+	if currentSite == nil || currentSite.DB == nil {
+		return nil
+	}
+	args, err := parseArgs(node.args, ctx)
+	if err != nil {
+		return err
+	}
+
+	if args["site_id"] != nil {
+		args["siteId"] = args["site_id"]
+	}
+	if args["siteId"] != nil {
+		siteId := args["siteId"].Integer()
+		currentSite = provider.GetWebsite(uint(siteId))
+	}
+	showCategory := false
+	if args["showCategory"] != nil {
+		showCategory = args["showCategory"].Bool()
+	}
+	showPrice := false
+	if args["showPrice"] != nil {
+		showPrice = args["showPrice"].Bool()
+	}
+	showAvailability := false
+	if args["showAvailability"] != nil {
+		showAvailability = args["showAvailability"].Bool()
+	}
+	showAll := false
+	if args["showAll"] != nil {
+		showAll = args["showAll"].Bool()
+	}
+	categoryDetail, _ := ctx.Public["category"].(*model.Category)
+	categoryId := uint(0)
+	parentId := uint(0)
+	if args["parentId"] != nil {
+		parentId = uint(args["parentId"].Integer())
+		parentText := args["parentId"].String()
+		if parentText == "parent" {
+			if categoryDetail != nil {
+				parentId = categoryDetail.ParentId
+			}
+		}
+	}
+	if categoryDetail != nil {
+		categoryId = categoryDetail.Id
+	}
+
+	if args["moduleId"] == nil {
+		return nil
+	}
+
+	moduleId := uint(args["moduleId"].Integer())
+	module := currentSite.GetModuleFromCache(moduleId)
+	if module == nil {
+		return nil
+	}
+
+	allText := currentSite.TplTr("All")
+
+	if args["allText"] != nil {
+		if args["allText"].IsBool() {
+			allText = ""
+		} else {
+			allText = args["allText"].String()
+			if allText == "false" {
+				// 文字版的也等同于不显示
+				allText = ""
+			}
+		}
+	}
+	if allText != "" {
+		showAll = true
+	}
+	urlParams, _ := ctx.Public["urlParams"].(map[string]string)
+
+	req := request.ApiFilterRequest{
+		ModuleId:         int64(moduleId),
+		ShowAll:          showAll,
+		AllText:          allText,
+		ShowPrice:        showPrice,
+		ShowAvailability: showAvailability,
+		ShowCategory:     showCategory,
+		ParentId:         int64(parentId),
+		CategoryId:       int64(categoryId),
+		UrlParams:        urlParams,
+	}
+
+	filterGroups, err2 := currentSite.ApiGetFilters(&req)
+	if err2 != nil {
+		return nil
+	}
+
+	ctx.Private[node.name] = filterGroups
+
+	//execute
+	node.wrapper.Execute(ctx, writer)
+
+	return nil
+}
+
+func TagArchiveFiltersParser(doc *pongo2.Parser, start *pongo2.Token, arguments *pongo2.Parser) (pongo2.INodeTag, *pongo2.Error) {
+	tagNode := &tagArchiveFiltersNode{
+		args: make(map[string]pongo2.IEvaluator),
+	}
+
+	nameToken := arguments.MatchType(pongo2.TokenIdentifier)
+	if nameToken == nil {
+		return nil, arguments.Error("archiveFilters-tag needs a accept name.", nil)
+	}
+	tagNode.name = nameToken.Val
+
+	args, err := parseWith(arguments)
+	if err != nil {
+		return nil, err
+	}
+	tagNode.args = args
+
+	for arguments.Remaining() > 0 {
+		return nil, arguments.Error("Malformed archiveFilters-tag arguments.", nil)
+	}
+	wrapper, endtagargs, err := doc.WrapUntilTag("endarchiveFilters")
+	if err != nil {
+		return nil, err
+	}
+	if endtagargs.Remaining() > 0 {
+		endtagnameToken := endtagargs.MatchType(pongo2.TokenIdentifier)
+		if endtagnameToken != nil {
+			if endtagnameToken.Val != nameToken.Val {
+				return nil, endtagargs.Error(fmt.Sprintf("Name for 'endarchiveFilters' must equal to 'archiveFilters'-tag's name ('%s' != '%s').",
+					nameToken.Val, endtagnameToken.Val), nil)
+			}
+		}
+
+		if endtagnameToken == nil || endtagargs.Remaining() > 0 {
+			return nil, endtagargs.Error("Either no or only one argument (identifier) allowed for 'endarchiveFilters'.", nil)
+		}
+	}
+	tagNode.wrapper = wrapper
+
+	return tagNode, nil
+}

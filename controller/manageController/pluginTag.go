@@ -1,0 +1,322 @@
+package manageController
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/kataras/iris/v12"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider"
+	"kandaoni.com/anqicms/request"
+)
+
+// PluginTagList 分页查询标签列表，支持按名称与分类筛选。
+//
+// 参数说明：
+//   - 查询参数 "current": 当前页码，默认为 1。
+//   - 查询参数 "pageSize": 每页条数，默认为 20。
+//   - 查询参数 "title": 按标签名称模糊搜索。
+//   - 查询参数 "category_id": 按分类 ID 筛选，0 表示不限。
+func PluginTagList(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	title := ctx.URLParam("title")
+	currentPage := ctx.URLParamIntDefault("current", 1)
+	if currentPage < 1 {
+		// offset 由本函数算好后传入，页码非法时必须夹住，否则会算出负 offset。
+		currentPage = 1
+	}
+	pageSize := ctx.URLParamIntDefault("pageSize", 20)
+	categoryId := uint(ctx.URLParamIntDefault("category_id", 0))
+	var categoryIds []uint
+	if categoryId > 0 {
+		categoryIds = append(categoryIds, categoryId)
+	}
+	// 后台分页需要精确总数，needTotal 固定 true；后台访问不受前台的最大页码限制。
+	tags, total, err := currentSite.GetTagList(0, title, categoryIds, "", (currentPage-1)*pageSize, pageSize, true, "id desc")
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	// 生成链接
+	for i := range tags {
+		tags[i].Link = currentSite.GetUrl("tag", tags[i], 0)
+		tags[i].GetThumb(currentSite.PluginStorage.StorageUrl, currentSite.GetDefaultThumb(int(tags[i].Id)))
+		// categoryTitle
+		if tags[i].CategoryId > 0 {
+			category := currentSite.GetCategoryFromCache(tags[i].CategoryId)
+			if category != nil {
+				tags[i].CategoryTitle = category.Title
+			}
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code":  config.StatusOK,
+		"msg":   "",
+		"total": total,
+		"data":  tags,
+	})
+}
+
+// PluginTagDetail 查询单个标签的详情、标签内容与自定义字段。
+//
+// 参数说明：
+//   - 查询参数 "id": 标签 ID，必填。
+func PluginTagDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	id := ctx.URLParamIntDefault("id", 0)
+
+	tag, err := currentSite.GetTagById(uint(id))
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	tag.GetThumb(currentSite.PluginStorage.StorageUrl, currentSite.GetDefaultThumb(int(tag.Id)))
+	tagContent, err := currentSite.GetTagContentById(tag.Id)
+	if err == nil {
+		tag.Content = tagContent.Content
+		if tagContent.Extra != nil {
+			tag.Extra = tagContent.Extra
+			fields := currentSite.GetTagFields()
+			if len(fields) > 0 {
+				for _, field := range fields {
+					if (field.Type == config.CustomFieldTypeImage || field.Type == config.CustomFieldTypeFile || field.Type == config.CustomFieldTypeEditor) &&
+						tag.Extra[field.FieldName] != nil {
+						tag.Extra[field.FieldName] = currentSite.ReplaceContentUrl(tag.Extra[field.FieldName].(string), true)
+					}
+					if field.Type == config.CustomFieldTypeImages && tag.Extra[field.FieldName] != nil {
+						if val, ok := tag.Extra[field.FieldName].([]interface{}); ok {
+							for j, v2 := range val {
+								v2s, _ := v2.(string)
+								val[j] = currentSite.ReplaceContentUrl(v2s, true)
+							}
+							tag.Extra[field.FieldName] = val
+						}
+					} else if field.Type == config.CustomFieldTypeTexts && tag.Extra[field.FieldName] != nil {
+						var texts []config.CustomFieldTexts
+						_ = json.Unmarshal([]byte(fmt.Sprint(tag.Extra[field.FieldName])), &texts)
+						tag.Extra[field.FieldName] = texts
+					} else if field.Type == config.CustomFieldTypeTimeline && tag.Extra[field.FieldName] != nil {
+						var val config.TimelineField
+						_ = json.Unmarshal([]byte(fmt.Sprint(tag.Extra[field.FieldName])), &val)
+						tag.Extra[field.FieldName] = val
+					}
+				}
+			}
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": tag,
+	})
+}
+
+// PluginTagDetailForm 新建或更新标签。
+func PluginTagDetailForm(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.PluginTag
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// UpdateAll 决定「未传的字段」怎么处理：
+	//   true  —— 全量覆盖。未传=零值的字段会被清空。这是**表单提交**的语义：
+	//            前端提交整个表单，某个字段没出现在表单里就意味着用户清空了它。
+	//   false —— PATCH 语义。只覆盖显式传入的字段，未传的一律保持库里的原值。
+	//            这是 **AI/程序化调用**需要的语义：只想改标题，不该动其它字段。
+	//
+	// 用 Partial（反向开关）而非直接暴露 UpdateAll，是为了区分「调用方没传这个字段」
+	// 与「调用方显式传了 false」——Go 的 bool 零值做不到，前端又不传该字段。
+	// Partial 优先于调用方传的 update_all。
+	if !req.Partial {
+		req.UpdateAll = true
+	}
+
+	tag, err := currentSite.SaveTag(&req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 插入记录
+				if req.Id == 0 {
+					req.Id = tag.Id
+					subTag, err := subSite.SaveTag(&req)
+					if err == nil {
+						// 同步成功，进行翻译
+						if currentSite.MultiLanguage.AutoTranslate {
+							var content string
+							tagContent, _ := subSite.GetTagContentById(subTag.Id)
+							if tagContent != nil {
+								content = tagContent.Content
+							}
+							transReq := &provider.AnqiTranslateTextRequest{
+								Text: []string{
+									subTag.Title,       // 0
+									subTag.Description, // 1
+									subTag.Keywords,    // 2
+									content,            // 3
+								},
+								Language:   currentSite.System.Language,
+								ToLanguage: subSite.System.Language,
+							}
+							res, err := currentSite.AnqiTranslateString(transReq)
+							if err == nil {
+								// 只处理成功的结果
+								subSite.DB.Model(subTag).UpdateColumns(map[string]interface{}{
+									"title":       res.Text[0],
+									"description": res.Text[1],
+									"keywords":    res.Text[2],
+								})
+								if res.Text[3] != "" {
+									subSite.DB.Model(&model.TagContent{}).Where("id = ?", subTag.Id).UpdateColumn("content", res.Text[3])
+								}
+							}
+						}
+					}
+				} else {
+					// 修改的话，就排除 title, seo_title，description，keywords 字段
+					tmpTag, err := subSite.GetTagById(req.Id)
+					if err == nil {
+						req.Title = tmpTag.Title
+						req.SeoTitle = library.Ptr(tmpTag.SeoTitle)
+						req.Description = library.Ptr(tmpTag.Description)
+						req.Keywords = library.Ptr(tmpTag.Keywords)
+						req.Content = library.Ptr(tmpTag.Content)
+					}
+					_, _ = subSite.SaveTag(&req)
+				}
+			}
+		}
+	}
+	// 更新缓存
+	go func() {
+		currentSite.BuildTagIndexCache(ctx)
+		currentSite.BuildSingleTagCache(ctx, tag)
+		// 上传到静态服务器
+		_ = currentSite.SyncHtmlCacheToStorage("", "")
+	}()
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateDocumentTagLog", tag.Id, tag.Title))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("SaveSuccessfully"),
+		"data": tag,
+	})
+}
+
+// PluginTagDelete 根据 ID 删除指定标签。
+func PluginTagDelete(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.PluginTagDeleteRequest
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	tag, err := currentSite.GetTagById(req.Id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	err = currentSite.DeleteTag(tag.Id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 同步删除
+				_ = subSite.DeleteTag(tag.Id)
+			}
+		}
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("DeleteDocumentTagLog", tag.Id, tag.Title))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("TagDeleted"),
+	})
+}
+
+// PluginTagFields 查询标签的自定义字段定义。
+func PluginTagFields(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+
+	fields := currentSite.GetTagFields()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": fields,
+	})
+}
+
+// PluginTagFieldsForm 保存标签的自定义字段定义。
+func PluginTagFieldsForm(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req []config.CustomField
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	if err := currentSite.SaveTagFields(req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("SaveSuccessfully"),
+	})
+}

@@ -1,0 +1,1586 @@
+package controller
+
+import (
+	"encoding/json"
+	"fmt"
+	"mime/multipart"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/fatih/structs"
+	"github.com/kataras/iris/v12"
+	"gorm.io/gorm"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider"
+	"kandaoni.com/anqicms/request"
+)
+
+func ApiArchiveDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	id := ctx.URLParamInt64Default("id", 0)
+	filename := ctx.URLParam("filename")
+	urlToken := ctx.URLParam("url_token")
+	if filename != "" {
+		urlToken = filename
+	}
+	userId := ctx.Values().GetUintDefault("userId", 0)
+	userGroup, _ := ctx.Values().Get("userGroup").(*model.UserGroup)
+	userInfo, _ := ctx.Values().Get("userInfo").(*model.User)
+	// 只有content字段有效
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+	password := ctx.URLParam("password")
+	variant := ctx.URLParamInt64Default("variant", 0)
+
+	req := &request.ApiArchiveRequest{
+		Id:        id,
+		UrlToken:  urlToken,
+		Render:    render,
+		Password:  password,
+		UserId:    userId,
+		UserGroup: userGroup,
+		UserInfo:  userInfo,
+		Variant:   variant,
+	}
+
+	archive, err := currentSite.ApiGetArchive(req)
+
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": archive,
+	})
+}
+
+func ApiArchiveFilters(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	moduleId := uint(ctx.URLParamIntDefault("moduleId", 0))
+
+	allText := ctx.URLParam("allText")
+	showAll := ctx.URLParamBoolDefault("showAll", false)
+	if allText == "false" {
+		showAll = false
+	}
+	showAvailability := ctx.URLParamBoolDefault("showAvailability", false)
+	showPrice := ctx.URLParamBoolDefault("showPrice", false)
+	showCategory := ctx.URLParamBoolDefault("showCategory", false)
+	parentId := ctx.URLParamInt64Default("parentId", 0)
+	categoryId := ctx.URLParamInt64Default("categoryId", 0)
+
+	var urlParams = map[string]string{}
+	refer, err := url.Parse(ctx.Request().Referer())
+	if err == nil {
+		q := refer.Query()
+
+		for k, v := range q {
+			urlParams[k] = strings.Join(v, ",")
+		}
+	}
+
+	req := request.ApiFilterRequest{
+		ModuleId:         int64(moduleId),
+		ShowAll:          showAll,
+		AllText:          allText,
+		ShowPrice:        showPrice,
+		ShowAvailability: showAvailability,
+		ShowCategory:     showCategory,
+		ParentId:         parentId,
+		CategoryId:       categoryId,
+		UrlParams:        urlParams,
+	}
+
+	filterGroups, err := currentSite.ApiGetFilters(&req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": filterGroups,
+	})
+}
+
+func ApiArchiveList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	archiveId := ctx.URLParamInt64Default("id", 0)
+	parentId := ctx.URLParamInt64Default("parentId", 0)
+	placeId := ctx.URLParamInt64Default("placeId", 0)
+	moduleId := uint(ctx.URLParamIntDefault("moduleId", 0))
+	authorId := uint(ctx.URLParamIntDefault("authorId", 0))
+	userId := uint(ctx.URLParamIntDefault("userId", 0))
+	showFlag := ctx.URLParamBoolDefault("showFlag", false)
+	showTag := ctx.URLParamBoolDefault("showTag", false)
+	showContent := ctx.URLParamBoolDefault("showContent", false)
+	showExtra := ctx.URLParamBoolDefault("showExtra", false)
+	draft := ctx.URLParamBoolDefault("draft", false)
+	showCategory := ctx.URLParamBoolDefault("showCategory", false)
+	showOptions := ctx.URLParamBoolDefault("showOptions", false)
+	showSkus := ctx.URLParamBoolDefault("showSkus", false)
+	showWholesaleRules := ctx.URLParamBoolDefault("showWholesaleRules", false)
+
+	tmpUserId := ctx.URLParam("userId")
+	if tmpUserId == "self" {
+		// 获取自己的文章
+		userId = ctx.Values().GetUintDefault("userId", 0)
+	}
+	if userId > 0 {
+		authorId = userId
+	}
+	var categoryIds []int
+	var categoryDetail *model.Category
+	tmpCatId := ctx.URLParam("categoryId")
+	if tmpCatId != "" {
+		tmpIds := strings.Split(tmpCatId, ",")
+		for _, v := range tmpIds {
+			tmpId, _ := strconv.Atoi(v)
+			if tmpId > 0 {
+				categoryDetail = currentSite.GetCategoryFromCache(uint(tmpId))
+				if categoryDetail != nil {
+					categoryIds = append(categoryIds, int(categoryDetail.Id))
+					if moduleId == 0 {
+						moduleId = categoryDetail.ModuleId
+					}
+				}
+			}
+		}
+	}
+	// 增加支持 excludeCategoryId
+	var excludeCategoryIds []int
+	tmpExcludeCatId := ctx.URLParam("excludeCategoryId")
+	if tmpExcludeCatId != "" {
+		tmpIds := strings.Split(tmpExcludeCatId, ",")
+		for _, v := range tmpIds {
+			tmpId, _ := strconv.Atoi(v)
+			if tmpId > 0 {
+				excludeCategoryIds = append(excludeCategoryIds, tmpId)
+			}
+		}
+	}
+	module := currentSite.GetModuleFromCache(moduleId)
+
+	order := ctx.URLParam("order")
+	limit := 10
+	offset := 0
+	currentPage := ctx.URLParamIntDefault("page", 1)
+	listType := ctx.URLParamDefault("type", "list")
+	flag := ctx.URLParam("flag")
+	q := ctx.URLParam("q")
+	child := true
+	if currentPage < 1 {
+		currentPage = 1
+	}
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+
+	childTmp, err := ctx.URLParamBool("child")
+	if err == nil {
+		child = childTmp
+	}
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	// 支持更多的参数搜索，
+	extraFields := map[string]interface{}{}
+
+	if listType == "page" {
+		if currentPage > 1 {
+			offset = (currentPage - 1) * limit
+		}
+	}
+
+	var fields []string
+	fields = append(fields, "id")
+	if module != nil && len(module.Fields) > 0 {
+		for _, v := range module.Fields {
+			if v.FieldName != "type" && ctx.URLParamExists(v.FieldName) {
+				extraFields[v.FieldName] = ctx.URLParam(v.FieldName)
+			}
+		}
+	}
+	urlParams := ctx.URLParams()
+	for k, v := range urlParams {
+		if k == "price" || strings.HasPrefix(k, "filter") {
+			extraFields[k] = v
+		}
+	}
+
+	tag := ctx.URLParam("tag")
+	tagId := ctx.URLParamInt64Default("tagId", 0)
+	like := ctx.URLParam("like")
+	keywords := ctx.URLParam("keywords")
+	productType := ctx.URLParamIntDefault("productType", 0)
+
+	req := request.ApiArchiveListRequest{
+		Id:                 archiveId,
+		Render:             render,
+		ProductType:        productType,
+		ParentId:           int64(parentId),
+		PlaceId:            int64(placeId),
+		CategoryIds:        categoryIds,
+		ExcludeCategoryIds: excludeCategoryIds,
+		ModuleId:           int64(moduleId),
+		AuthorId:           int64(authorId),
+		ShowFlag:           showFlag,
+		ShowTag:            showTag,
+		ShowContent:        showContent,
+		ShowExtra:          showExtra,
+		ShowCategory:       showCategory,
+		ShowOptions:        showOptions,
+		ShowSkus:           showSkus,
+		ShowWholesaleRules: showWholesaleRules,
+		Draft:              draft,
+		Child:              child,
+		Order:              order,
+		Tag:                tag,
+		TagId:              int64(tagId),
+		Flag:               flag,
+		Q:                  q,
+		Like:               like,
+		Keywords:           keywords,
+		Type:               listType,
+		Page:               currentPage,
+		Limit:              limit,
+		Offset:             offset,
+		UserId:             userId,
+		ExtraFields:        extraFields,
+	}
+
+	archives, total := currentSite.ApiGetArchives(&req)
+
+	ctx.JSON(iris.Map{
+		"code":  config.StatusOK,
+		"msg":   "",
+		"total": total,
+		"data":  archives,
+	})
+}
+
+func ApiArchiveParams(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	archiveId := ctx.URLParamInt64Default("id", 0)
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+	filename := ctx.URLParam("filename")
+	urlToken := ctx.URLParam("url_token")
+	if filename != "" {
+		urlToken = filename
+	}
+	userId := ctx.Values().GetUintDefault("userId", 0)
+	userGroup, _ := ctx.Values().Get("userGroup").(*model.UserGroup)
+	userInfo, _ := ctx.Values().Get("userInfo").(*model.User)
+	sorted := true
+	sortedTmp, err := ctx.URLParamBool("sorted")
+	if err == nil {
+		sorted = sortedTmp
+	}
+
+	req := request.ApiArchiveRequest{
+		Id:        archiveId,
+		UrlToken:  urlToken,
+		Render:    render,
+		UserId:    userId,
+		UserGroup: userGroup,
+		UserInfo:  userInfo,
+	}
+
+	params, err := currentSite.ApiGetArchiveParams(&req)
+	if sorted == false {
+		var extras = make(map[string]config.CustomField, len(params))
+		for _, v := range params {
+			extras[v.FieldName] = v
+		}
+
+		ctx.JSON(iris.Map{
+			"code": config.StatusOK,
+			"msg":  "",
+			"data": extras,
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": params,
+	})
+}
+
+func ApiCategoryDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	id := uint(ctx.URLParamIntDefault("id", 0))
+	filename := ctx.URLParam("filename")
+	catname := ctx.URLParam("catname")
+	if catname != "" {
+		filename = catname
+	}
+	// 只有content字段有效
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+
+	req := &request.ApiCategoryRequest{
+		Id:       int64(id),
+		UrlToken: filename,
+		Render:   render,
+	}
+
+	category, err := currentSite.ApiGetCategory(req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": category,
+	})
+}
+
+func ApiCategoryList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	moduleId := uint(ctx.URLParamIntDefault("moduleId", 0))
+	parentId := uint(ctx.URLParamIntDefault("parentId", 0))
+	all := ctx.URLParamBoolDefault("all", false)
+	limit := 0
+	offset := 0
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	req := &request.ApiCategoryListRequest{
+		ModuleId: int64(moduleId),
+		ParentId: int64(parentId),
+		All:      all,
+		Limit:    limit,
+		Offset:   offset,
+	}
+
+	categories, _ := currentSite.ApiGetCategories(req)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": categories,
+	})
+}
+
+func ApiModuleDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	id := uint(ctx.URLParamIntDefault("id", 0))
+	filename := ctx.URLParam("filename")
+
+	module := currentSite.GetModuleFromCache(id)
+	if module == nil {
+		if filename != "" {
+			module = currentSite.GetModuleFromCacheByToken(filename)
+		}
+	}
+	if module == nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  currentSite.TplTr("ModelDoesNotExist"),
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": module,
+	})
+}
+
+func ApiModuleList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+
+	moduleList := currentSite.GetCacheModules()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": moduleList,
+	})
+}
+
+func ApiCommentList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	archiveId := ctx.URLParamInt64Default("id", 0)
+	userId := uint(ctx.URLParamIntDefault("user_id", 0))
+	order := ctx.URLParamDefault("order", "id desc")
+	limit := 10
+	offset := 0
+	currentPage := ctx.URLParamIntDefault("page", 1)
+	//listType :=  ctx.URLParamDefault("type", "list")
+
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	commentList, total, _ := currentSite.GetCommentList(archiveId, userId, order, currentPage, limit, offset)
+
+	ctx.JSON(iris.Map{
+		"code":  config.StatusOK,
+		"msg":   "",
+		"total": total,
+		"data":  commentList,
+	})
+}
+
+func ApiContact(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	var settings = map[string]interface{}{}
+	setting := currentSite.ApiGetContactSetting()
+	reflectFields := structs.Fields(setting)
+
+	for _, v := range reflectFields {
+		if v.Name() != "ExtraFields" {
+			settings[v.Name()] = v.Value()
+		}
+	}
+
+	if setting.ExtraFields != nil {
+		for i := range setting.ExtraFields {
+			settings[setting.ExtraFields[i].Name] = setting.ExtraFields[i].Value
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": settings,
+	})
+}
+
+func ApiSystem(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	var settings = map[string]interface{}{}
+	setting := currentSite.ApiGetSystemSetting()
+	reflectFields := structs.Fields(setting)
+
+	for _, v := range reflectFields {
+		if v.Name() != "ExtraFields" {
+			settings[v.Name()] = v.Value()
+		}
+	}
+
+	if setting.ExtraFields != nil {
+		for i := range setting.ExtraFields {
+			settings[setting.ExtraFields[i].Name] = setting.ExtraFields[i].Value
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": settings,
+	})
+}
+
+func ApiDiyField(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+	var settings = map[string]interface{}{}
+	fields := currentSite.ApiGetDiyFields(render)
+	for i := range fields {
+		settings[fields[i].Name] = fields[i].Value
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": settings,
+	})
+}
+
+func ApiGuestbook(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+
+	fields := currentSite.ApiGetGuestbookFields()
+
+	// 提供recaptcha site key
+	recaptchaSiteKey := ""
+	setting := currentSite.GetAkismetSetting(false)
+	if setting.RecaptchaOpen && setting.RecaptchaSiteKey != "" {
+		recaptchaSiteKey = setting.RecaptchaSiteKey
+	}
+
+	ctx.JSON(iris.Map{
+		"code":          config.StatusOK,
+		"msg":           "",
+		"data":          fields,
+		"recaptcha_key": recaptchaSiteKey,
+	})
+}
+
+func ApiLinkList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	linkList, _ := currentSite.GetLinkList()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": linkList,
+	})
+}
+
+func ApiNavList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	typeId := ctx.URLParamIntDefault("typeId", 1)
+	showType := ctx.URLParamDefault("showType", "children")
+	navList := currentSite.GetNavsFromCache(uint(typeId), showType)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": navList,
+	})
+}
+
+func ApiNextArchive(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	archiveId := ctx.URLParamInt64Default("id", 0)
+	archiveDetail, err := currentSite.GetArchiveById(archiveId)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	nextArchive, _ := currentSite.GetNextArchive(int64(archiveDetail.CategoryId), archiveDetail.Id)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": nextArchive,
+	})
+}
+
+func ApiPrevArchive(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	archiveId := ctx.URLParamInt64Default("id", 0)
+	archiveDetail, err := currentSite.GetArchiveById(archiveId)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	prevArchive, _ := currentSite.GetPreviousArchive(int64(archiveDetail.CategoryId), archiveDetail.Id)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": prevArchive,
+	})
+}
+
+func ApiPageDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	id := uint(ctx.URLParamIntDefault("id", 0))
+	filename := ctx.URLParam("filename")
+	// 只有content字段有效
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+	category := currentSite.GetCategoryFromCache(id)
+	if category == nil {
+		if filename != "" {
+			category = currentSite.GetCategoryFromCacheByToken(filename)
+		}
+	}
+	if category == nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  "not found",
+		})
+		return
+	}
+	if category.Link == "" {
+		category.Link = currentSite.GetUrl("category", category, 0)
+	}
+	category.Thumb = category.GetThumb(currentSite.PluginStorage.StorageUrl, currentSite.GetDefaultThumb(int(category.Id)))
+	// convert markdown to html
+	if render {
+		frontUrl := currentSite.System.BaseUrl
+		if currentSite.System.FrontUrl != "" {
+			frontUrl = currentSite.System.FrontUrl
+		}
+		category.Content = library.MarkdownToHTML(category.Content, frontUrl, currentSite.Content.FilterOutlink)
+	}
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": category,
+	})
+}
+
+func ApiPageList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	pageList := currentSite.GetCategoriesFromCache(0, 0, config.CategoryTypePage, true)
+	limit := 0
+	offset := 0
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	var resultList []*model.Category
+
+	for i := range pageList {
+		if offset > i {
+			continue
+		}
+		if limit > 0 && i >= (limit+offset) {
+			break
+		}
+		pageList[i].Link = currentSite.GetUrl("page", pageList[i], 0)
+		pageList[i].Thumb = pageList[i].GetThumb(currentSite.PluginStorage.StorageUrl, currentSite.GetDefaultThumb(int(pageList[i].Id)))
+
+		resultList = append(resultList, pageList[i])
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": pageList,
+	})
+}
+
+func ApiTagDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	id := uint(ctx.URLParamIntDefault("id", 0))
+	filename := ctx.URLParam("filename")
+	// 只有content字段有效
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+	tagDetail, err := currentSite.GetTagById(id)
+	if err != nil {
+		if filename != "" {
+			tagDetail, err = currentSite.GetTagByUrlToken(filename)
+		}
+	}
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	frontUrl := currentSite.System.BaseUrl
+	if currentSite.System.FrontUrl != "" {
+		frontUrl = currentSite.System.FrontUrl
+	}
+	if tagDetail != nil {
+		tagDetail.Link = currentSite.GetUrl("tag", tagDetail, 0)
+		tagDetail.GetThumb(currentSite.PluginStorage.StorageUrl, currentSite.GetDefaultThumb(int(tagDetail.Id)))
+		tagContent, err := currentSite.GetTagContentById(tagDetail.Id)
+		if err == nil {
+			tagDetail.Content = tagContent.Content
+			// convert markdown to html
+			if render {
+				tagDetail.Content = library.MarkdownToHTML(tagDetail.Content, frontUrl, currentSite.Content.FilterOutlink)
+			}
+			tagDetail.Extra = tagContent.Extra
+			if tagDetail.Extra != nil {
+				fields := currentSite.GetTagFields()
+				if len(fields) > 0 {
+					for _, field := range fields {
+						if (tagDetail.Extra[field.FieldName] == nil || tagDetail.Extra[field.FieldName] == "" || tagDetail.Extra[field.FieldName] == 0) &&
+							field.Type != config.CustomFieldTypeRadio &&
+							field.Type != config.CustomFieldTypeCheckbox &&
+							field.Type != config.CustomFieldTypeSelect {
+							// default
+							tagDetail.Extra[field.FieldName] = field.Content
+						}
+						if (field.Type == config.CustomFieldTypeImage || field.Type == config.CustomFieldTypeFile || field.Type == config.CustomFieldTypeEditor) &&
+							tagDetail.Extra[field.FieldName] != nil {
+							value, ok2 := tagDetail.Extra[field.FieldName].(string)
+							if ok2 {
+								if field.Type == config.CustomFieldTypeEditor && render {
+									value = library.MarkdownToHTML(value, frontUrl, currentSite.Content.FilterOutlink)
+								}
+								tagDetail.Extra[field.FieldName] = currentSite.ReplaceContentUrl(value, true)
+							}
+						}
+						if field.Type == config.CustomFieldTypeImages && tagDetail.Extra[field.FieldName] != nil {
+							if val, ok := tagDetail.Extra[field.FieldName].([]interface{}); ok {
+								for j, v2 := range val {
+									v2s, _ := v2.(string)
+									val[j] = currentSite.ReplaceContentUrl(v2s, true)
+								}
+								tagDetail.Extra[field.FieldName] = val
+							}
+						} else if field.Type == config.CustomFieldTypeTexts && tagDetail.Extra[field.FieldName] != nil {
+							var texts []config.CustomFieldTexts
+							_ = json.Unmarshal([]byte(fmt.Sprint(tagDetail.Extra[field.FieldName])), &texts)
+							tagDetail.Extra[field.FieldName] = texts
+						} else if field.Type == config.CustomFieldTypeTimeline && tagDetail.Extra[field.FieldName] != nil {
+							var val config.TimelineField
+							_ = json.Unmarshal([]byte(fmt.Sprint(tagDetail.Extra[field.FieldName])), &val)
+							tagDetail.Extra[field.FieldName] = val
+						} else if field.Type == config.CustomFieldTypeArchive && tagDetail.Extra[field.FieldName] != nil {
+							// 列表
+							var arcIds []int64
+							buf, _ := json.Marshal(tagDetail.Extra[field.FieldName])
+							_ = json.Unmarshal(buf, &arcIds)
+							if len(arcIds) == 0 && field.Content != "" {
+								value, _ := strconv.ParseInt(fmt.Sprint(field.Content), 10, 64)
+								if value > 0 {
+									arcIds = append(arcIds, value)
+								}
+							}
+							if len(arcIds) > 0 {
+								archives, _, _ := currentSite.GetArchiveList(func(tx *gorm.DB) *gorm.DB {
+									return tx.Where("archives.`id` IN (?)", arcIds)
+								}, "archives.id ASC", 0, len(arcIds))
+								tagDetail.Extra[field.FieldName] = archives
+							} else {
+								tagDetail.Extra[field.FieldName] = nil
+							}
+						} else if field.Type == config.CustomFieldTypeCategory {
+							value, err := strconv.ParseInt(fmt.Sprint(tagDetail.Extra[field.FieldName]), 10, 64)
+							if err != nil && field.Content != "" {
+								value, _ = strconv.ParseInt(fmt.Sprint(field.Content), 10, 64)
+							}
+							if value > 0 {
+								category := currentSite.GetCategoryFromCache(uint(value))
+								if category.Link == "" {
+									category.Link = currentSite.GetUrl("category", category, 0)
+								}
+								tagDetail.Extra[field.FieldName] = category
+							} else {
+								tagDetail.Extra[field.FieldName] = nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": tagDetail,
+	})
+}
+
+func ApiTagDataList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	id := uint(ctx.URLParamIntDefault("id", 0))
+	filename := ctx.URLParam("filename")
+
+	tagDetail, err := currentSite.GetTagById(id)
+	if err != nil {
+		if filename != "" {
+			tagDetail, err = currentSite.GetTagByUrlToken(filename)
+		}
+	}
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	limit := 10
+	offset := 0
+	currentPage := ctx.URLParamIntDefault("page", 1)
+	order := ctx.URLParamDefault("order", "")
+	if order == "" {
+		if currentSite.Content.UseSort == 1 {
+			order = "archives.`sort` desc, archives.`created_time` desc"
+		} else {
+			order = "archives.`created_time` desc"
+		}
+	}
+	listType := ctx.URLParamDefault("type", "list")
+
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	if listType == "page" {
+		if currentPage > 1 {
+			offset = (currentPage - 1) * limit
+		}
+	}
+	archives, total, _ := currentSite.GetArchiveList(func(tx *gorm.DB) *gorm.DB {
+		tx = tx.Table("`archives` as archives").
+			Joins("INNER JOIN `tag_data` as t ON archives.id = t.item_id AND t.`tag_id` = ?", tagDetail.Id)
+		return tx
+	}, order, currentPage, limit, offset)
+	var archiveIds = make([]int64, 0, len(archives))
+	for i := range archives {
+		archiveIds = append(archiveIds, archives[i].Id)
+		if len(archives[i].Password) > 0 {
+			archives[i].Password = ""
+			archives[i].HasPassword = true
+		}
+	}
+	// 读取flags
+	if len(archiveIds) > 0 {
+		var flags []*model.ArchiveFlags
+		currentSite.DB.Model(&model.ArchiveFlag{}).Where("`archive_id` IN (?)", archiveIds).Select("archive_id", "GROUP_CONCAT(`flag`) as flags").Group("archive_id").Scan(&flags)
+		for i := range archives {
+			for _, f := range flags {
+				if f.ArchiveId == archives[i].Id {
+					archives[i].Flag = f.Flags
+					break
+				}
+			}
+		}
+	}
+	ctx.JSON(iris.Map{
+		"code":  config.StatusOK,
+		"msg":   "",
+		"total": total,
+		"data":  archives,
+	})
+}
+
+func ApiTagList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	limit := 10
+	offset := 0
+	limitHasOffset := false
+	currentPage := ctx.URLParamIntDefault("page", 1)
+	itemId := ctx.URLParamInt64Default("itemId", 0)
+	listType := ctx.URLParamDefault("type", "list")
+	letter := ctx.URLParam("letter")
+	order := ctx.URLParamDefault("order", "id desc")
+	q := ctx.URLParam("q")
+
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+			limitHasOffset = true
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	// 偏移只有一个出口：显式 limit="offset,size" 优先，否则按 page 推算。
+	// 原先这段被 `if listType == "page"` 包着，而 GetTagList 内部又按页码重算一次，
+	// 两处各自为政，显式 offset 会被静默覆盖。
+	if currentPage > 1 && !limitHasOffset {
+		offset = (currentPage - 1) * limit
+	}
+
+	// 前端接口限制最大页码，与列表页（ArchiveIndex）同一口径；后台标签管理不设限制。
+	// 缺这道闸门时，扒站方按 ?page=N 能一路翻下去，每页都要扫一遍 tags 全表。
+	if currentPage > currentSite.Content.MaxPage {
+		ctx.JSON(iris.Map{
+			"code":  config.StatusOK,
+			"msg":   "",
+			"total": 0,
+			"data":  make([]*model.Tag, 0),
+		})
+		return
+	}
+
+	var categoryIds []uint
+	var categoryDetail *model.Category
+	tmpCatId := ctx.URLParam("categoryId")
+	if tmpCatId != "" {
+		tmpIds := strings.Split(tmpCatId, ",")
+		for _, v := range tmpIds {
+			tmpId, _ := strconv.Atoi(v)
+			if tmpId > 0 {
+				categoryDetail = currentSite.GetCategoryFromCache(uint(tmpId))
+				if categoryDetail != nil {
+					categoryIds = append(categoryIds, categoryDetail.Id)
+				}
+			}
+		}
+	}
+	// 只有 page 模式需要精确总数；list 模式跳过 count，避免全表扫描。
+	tagList, total, _ := currentSite.GetTagList(itemId, q, categoryIds, letter, offset, limit, listType == "page", order)
+	for i := range tagList {
+		tagList[i].Link = currentSite.GetUrl("tag", tagList[i], 0)
+		tagList[i].GetThumb(currentSite.PluginStorage.StorageUrl, currentSite.GetDefaultThumb(int(tagList[i].Id)))
+	}
+
+	ctx.JSON(iris.Map{
+		"code":  config.StatusOK,
+		"msg":   "",
+		"total": total,
+		"data":  tagList,
+	})
+}
+
+func ApiPlaceDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	if currentSite.PluginPlace.Open == false {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("NotOpen"),
+		})
+		return
+	}
+	id := uint(ctx.URLParamIntDefault("id", 0))
+	filename := ctx.URLParam("filename")
+	// 只有content字段有效
+	render := currentSite.Content.Editor == "markdown"
+	if ctx.URLParamExists("render") {
+		render, _ = ctx.URLParamBool("render")
+	}
+
+	req := &request.ApiPlaceRequest{
+		Id:       int64(id),
+		UrlToken: filename,
+		Render:   render,
+	}
+
+	place, err := currentSite.ApiGetPlace(req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": place,
+	})
+}
+
+func ApiPlaceList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	if currentSite.PluginPlace.Open == false {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("NotOpen"),
+		})
+		return
+	}
+	parentId := uint(ctx.URLParamIntDefault("parentId", 0))
+	all := ctx.URLParamBoolDefault("all", false)
+	limit := 0
+	offset := 0
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	req := &request.ApiPlaceListRequest{
+		ParentId: int64(parentId),
+		All:      all,
+		Limit:    limit,
+		Offset:   offset,
+	}
+
+	places, _ := currentSite.ApiGetPlaces(req)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": places,
+	})
+}
+
+func ApiBannerList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	bannerType := ctx.URLParamDefault("type", "default")
+
+	banners, _ := currentSite.ApiGetBanners(bannerType)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": banners,
+	})
+}
+
+func ApiIndexTdk(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+
+	setting := currentSite.ApiGetIndexSetting()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": setting,
+	})
+}
+
+func ApiLanguages(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+
+	languages, _ := currentSite.ApiGetLanguages()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": languages,
+	})
+}
+
+func ApiAttachmentUpload(ctx iris.Context) {
+	AttachmentUpload(ctx)
+}
+
+func ApiCommentPublish(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	var req request.PluginComment
+	var err error
+	if err = ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	var req2 = map[string]string{
+		"content":    req.Content,
+		"captcha_id": req.CaptchaId,
+		"captcha":    req.Captcha,
+	}
+	if ok := SafeVerify(ctx, req2, "json", "comment"); !ok {
+		return
+	}
+
+	userId := ctx.Values().GetIntDefault("userId", 0)
+	userInfo := ctx.Values().Get("userInfo")
+	if userInfo != nil {
+		user, ok := userInfo.(*model.User)
+		if ok {
+			req.UserName = user.UserName
+		}
+	}
+
+	req.UserId = uint(userId)
+	if req.Ip == "" {
+		req.Ip = ctx.RemoteAddr()
+	}
+	if req.ParentId > 0 {
+		parent, err := currentSite.GetCommentById(req.ParentId)
+		if err == nil {
+			req.ToUid = parent.UserId
+		}
+	}
+	// 是否需要审核
+	var contentVerify = true
+	userGroup := ctx.Values().Get("userGroup")
+	if userGroup != nil {
+		group, ok := userGroup.(*model.UserGroup)
+		if ok && group != nil && group.Setting.ContentNoVerify {
+			contentVerify = !group.Setting.ContentNoVerify
+		}
+	}
+	req.Status = 0
+	if contentVerify == false {
+		// 不需要审核
+		req.Status = 1
+	}
+
+	comment, err := currentSite.SaveComment(&req)
+	if err != nil {
+		msg := currentSite.TplTr("SaveFailed")
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  msg,
+		})
+	}
+	// akismet 验证
+	go func() {
+		spamStatus, isChecked := currentSite.AkismentCheck(ctx, provider.CheckTypeComment, comment)
+		if isChecked {
+			currentSite.DB.Model(comment).UpdateColumn("status", spamStatus)
+		}
+	}()
+
+	msg := currentSite.TplTr("PublishSuccessfully")
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  msg,
+		"data": comment,
+	})
+}
+
+func ApiCommentPraise(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	var req request.PluginComment
+	var err error
+	if err = ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	userId := ctx.Values().GetIntDefault("userId", 0)
+	comment, err := currentSite.GetCommentById(req.Id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 检查是否点赞过
+	_, err = currentSite.AddCommentPraise(uint(userId), int64(comment.Id), comment.ArchiveId)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	comment.VoteCount += 1
+	comment.Active = true
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  currentSite.TplTr("LikeSuccessfully"),
+		"data": comment,
+	})
+}
+
+func ApiGuestbookForm(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	userId := ctx.Values().GetUintDefault("userId", 0)
+	fields := currentSite.GetGuestbookFields()
+	var req = map[string]interface{}{}
+	var err error
+	if err = ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	var result = map[string]string{}
+	extraData := map[string]interface{}{}
+	for _, item := range fields {
+		var val string
+		if item.Type == config.CustomFieldTypeCheckbox {
+			tmpVal, ok := req[item.FieldName].([]string)
+			if ok {
+				val = strings.Trim(strings.Join(tmpVal, ","), ",")
+			} else {
+				val, _ = req[item.FieldName].(string)
+			}
+		} else if item.Type == config.CustomFieldTypeImage || item.Type == config.CustomFieldTypeFile {
+			tmpVal, ok := req[item.FieldName].(string)
+			if ok {
+				tmpfile, err := os.CreateTemp("", "upload")
+				if err != nil {
+					ctx.JSON(iris.Map{
+						"code": config.StatusFailed,
+						"msg":  "File Not Found",
+					})
+					return
+				}
+				if _, err := tmpfile.Write([]byte(tmpVal)); err != nil {
+					_ = tmpfile.Close()
+					_ = os.Remove(tmpfile.Name())
+
+					ctx.JSON(iris.Map{
+						"code": config.StatusFailed,
+						"msg":  "File Not Found",
+					})
+				}
+				tmpfile.Seek(0, 0)
+				fileHeader := &multipart.FileHeader{
+					Filename: filepath.Base(item.FieldName),
+					Header:   nil,
+					Size:     int64(len(tmpVal)),
+				}
+				attach, err := currentSite.AttachmentUpload(tmpfile, fileHeader, 0, 0, userId)
+				if err == nil {
+					val = attach.Logo
+					if attach.Logo == "" {
+						val = attach.FileLocation
+					}
+				}
+
+				_ = tmpfile.Close()
+				_ = os.Remove(tmpfile.Name())
+			}
+		} else {
+			val, _ = req[item.FieldName].(string)
+		}
+
+		if item.Required && val == "" {
+			msg := currentSite.TplTr("%sIsRequired", item.Name)
+			ctx.JSON(iris.Map{
+				"code": config.StatusFailed,
+				"msg":  msg,
+			})
+			return
+		}
+		result[item.FieldName] = strings.TrimSpace(val)
+		if !item.IsSystem {
+			extraData[item.Name] = val
+		}
+	}
+	hookCtx := &provider.HookContext{
+		Point: provider.BeforeGuestbookPost,
+		Site:  currentSite,
+		Data:  req,
+	}
+	if err = provider.TriggerHook(hookCtx); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	// reCAPTCHA 校验
+	setting := currentSite.GetAkismetSetting(false)
+	if setting.RecaptchaOpen && setting.RecaptchaSiteKey != "" && setting.RecaptchaPrivateKey != "" {
+		recaptchaToken, _ := req["recaptcha_token"].(string)
+		resp, err := provider.VerifyRecaptcha(ctx.Request().Context(), setting.RecaptchaPrivateKey, recaptchaToken, ctx.RemoteAddr())
+		if err != nil || resp == nil || !resp.Success {
+			ctx.JSON(iris.Map{
+				"code": config.StatusFailed,
+				"msg":  currentSite.TplTr("CaptchaVerificationFailed"),
+			})
+			return
+		}
+	}
+
+	if ok := SafeVerify(ctx, result, "json", "guestbook"); !ok {
+		return
+	}
+
+	//先填充默认字段
+	guestbook := &model.Guestbook{
+		UserName:  result["user_name"],
+		Contact:   result["contact"],
+		Content:   result["content"],
+		Ip:        ctx.RemoteAddr(),
+		Refer:     ctx.Request().Referer(),
+		ExtraData: extraData,
+	}
+
+	err = currentSite.DB.Save(guestbook).Error
+	if err != nil {
+		msg := currentSite.TplTr("SaveFailed")
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  msg,
+		})
+		return
+	}
+	// akismet 验证
+	go func() {
+		spamStatus, isChecked := currentSite.AkismentCheck(ctx, provider.CheckTypeGuestbook, guestbook)
+		if isChecked {
+			currentSite.DB.Model(guestbook).UpdateColumn("status", spamStatus)
+		}
+		currentSite.ProcessGuestbook(guestbook, spamStatus)
+	}()
+
+	msg := currentSite.PluginGuestbook.ReturnMessage
+	if msg == "" {
+		msg = currentSite.TplTr("ThankYouForYourMessage!")
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  msg,
+	})
+}
+
+func ApiArchivePublish(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	var req request.Archive
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 是否需要审核
+	req.Draft = currentSite.Safe.APIPublish != 1
+	userGroup := ctx.Values().Get("userGroup")
+	if userGroup != nil {
+		group, ok := userGroup.(*model.UserGroup)
+		if ok && group != nil && group.Setting.ContentNoVerify {
+			req.Draft = !group.Setting.ContentNoVerify
+		}
+	}
+	userId := ctx.Values().GetIntDefault("userId", 0)
+	req.UserId = library.Ptr(uint(userId))
+	req.Extra = map[string]interface{}{}
+	// read body twice
+	var extraReq = map[string]interface{}{}
+	var err error
+	if err = ctx.ReadJSON(&extraReq); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	for k := range extraReq {
+		req.Extra[k] = map[string]interface{}{
+			"value": extraReq[k],
+		}
+	}
+	// UpdateAll 决定「未传的字段」怎么处理：
+	//   true  —— 全量覆盖。未传=零值的字段会被清空。这是**表单提交**的语义：
+	//            前端提交整个表单，某个字段没出现在表单里就意味着用户清空了它。
+	//   false —— PATCH 语义。只覆盖显式传入的字段，未传的一律保持库里的原值。
+	//            这是 **AI/程序化调用**需要的语义：只想改标题，不该动其它字段。
+	//
+	// 用 Partial（反向开关）而非直接暴露 UpdateAll，是为了区分「调用方没传这个字段」
+	// 与「调用方显式传了 false」——Go 的 bool 零值做不到，前端又不传该字段。
+	// Partial 优先于调用方传的 update_all。
+	if !req.Partial {
+		req.UpdateAll = true
+	}
+	archive, err := currentSite.SaveArchive(&req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	msg := currentSite.TplTr("PublishSuccessfully")
+	if req.Draft {
+		msg += currentSite.TplTr("ItHasEnteredTheReview")
+	}
+	archive.Link = currentSite.GetUrl("archive", archive, 0)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  msg,
+		"data": archive,
+	})
+}
+
+func ApiReviewList(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	archiveId := ctx.URLParamInt64Default("id", 0)
+	archiveId2 := ctx.URLParamInt64Default("archive_id", 0)
+	if archiveId2 > 0 {
+		archiveId = archiveId2
+	}
+	userId := uint(ctx.URLParamIntDefault("user_id", 0))
+	order := ctx.URLParamDefault("order", "id desc")
+	hasImage := ctx.URLParamBoolDefault("has_image", false)
+	limit := 10
+	offset := 0
+	currentPage := ctx.URLParamIntDefault("page", 1)
+	//listType :=  ctx.URLParamDefault("type", "list")
+
+	limitTmp := ctx.URLParam("limit")
+	if limitTmp != "" {
+		limitArgs := strings.Split(limitTmp, ",")
+		if len(limitArgs) == 2 {
+			offset, _ = strconv.Atoi(limitArgs[0])
+			limit, _ = strconv.Atoi(limitArgs[1])
+		} else if len(limitArgs) == 1 {
+			limit, _ = strconv.Atoi(limitArgs[0])
+		}
+		if limit > currentSite.Content.MaxLimit {
+			limit = currentSite.Content.MaxLimit
+		}
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	archive, err := currentSite.GetArchiveById(archiveId)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	reviewList, total := currentSite.GetOrderReviews(func(tx *gorm.DB) *gorm.DB {
+		if userId > 0 {
+			tx = tx.Where("user_id = ?", userId)
+		}
+		if archiveId > 0 {
+			tx = tx.Where("archive_id = ?", archiveId)
+		}
+		if hasImage {
+			tx = tx.Where("images is not null AND images != '{}'")
+		}
+		return tx.Where("status = ?", 1)
+	}, order, currentPage, limit, offset)
+
+	ctx.JSON(iris.Map{
+		"code":          config.StatusOK,
+		"msg":           "",
+		"total":         total,
+		"average_score": archive.AverageScore,
+		"data":          reviewList,
+	})
+}
+
+func ApiMetadata(ctx iris.Context) {
+	currentSite := provider.CurrentSite(ctx)
+	path := ctx.URLParam("path")
+
+	parsed, err := url.Parse(path)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	ctx.Params().Set("path", parsed.Path)
+
+	// 解析路由
+	params, _ := ParseRoute(ctx)
+	for i, v := range params {
+		if len(i) == 0 {
+			continue
+		}
+		ctx.Params().Set(i, v)
+	}
+
+	for k, v := range parsed.Query() {
+		params[k] = strings.Join(v, ",")
+	}
+
+	webInfo := currentSite.GetMetadata(params)
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": webInfo,
+	})
+}

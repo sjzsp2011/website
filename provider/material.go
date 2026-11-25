@@ -1,0 +1,434 @@
+package provider
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/PuerkitoBio/goquery"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/request"
+)
+
+func (w *Website) GetMaterialList(categoryId uint, keyword string, currentPage, pageSize int) ([]*model.Material, int64, error) {
+	var materials []*model.Material
+	offset := (currentPage - 1) * pageSize
+	var total int64
+
+	builder := w.DB.Model(&model.Material{}).Order("id desc")
+	if keyword != "" {
+		//模糊搜索
+		builder = builder.Where("(`title` like ?)", "%"+keyword+"%")
+	}
+	if categoryId != 0 {
+		// 查询指定分类的素材
+		builder = builder.Where("`category_id` = ?", categoryId)
+	}
+
+	err := builder.Count(&total).Limit(pageSize).Offset(offset).Find(&materials).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	for i, v := range materials {
+		materials[i].Content = w.ReplaceContentUrl(v.Content, true)
+	}
+
+	//增加分类名称
+	categories, err := w.GetMaterialCategories()
+	if err == nil {
+		for i, v := range materials {
+			for _, c := range categories {
+				if v.CategoryId == c.Id {
+					materials[i].CategoryTitle = c.Title
+				}
+			}
+		}
+	}
+
+	return materials, total, nil
+}
+
+func (w *Website) SaveMaterial(req *request.PluginMaterial) (material *model.Material, err error) {
+	newPost := false
+	if req.Id > 0 {
+		material, err = w.GetMaterialById(req.Id)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		material = &model.Material{
+			Status: 1,
+		}
+		newPost = true
+	}
+	force := req.UpdateAll && !req.Partial
+
+	oldContent := material.Content
+	library.Assign(&material.CategoryId, req.CategoryId, force)
+	library.Assign(&material.AutoUpdate, req.AutoUpdate, force)
+	// Status 的 0 是合法值（禁用），既不能用 `if req.Status > 0` 挡掉，
+	// 更不能硬编码成 1——那会让素材永远无法禁用。
+	if newPost {
+		material.Status = library.DerefOr(req.Status, 1)
+	} else {
+		library.Assign(&material.Status, req.Status, force)
+	}
+
+	// 内容处理：只有调用方真的传了 content 才跑（替换单个 &nbsp;、换成本地
+	// 域名、过滤外链、下载远程图片）。没传就保持库里的原值——否则「改个标题」
+	// 会把正文清空，引用该素材的文档下次自动更新时变成空白。
+	content := material.Content
+	if req.Content != nil {
+		content = library.ReplaceSingleSpace(*req.Content)
+		content = w.ReplaceContentUrl(content, false)
+	} else if force {
+		content = ""
+	}
+
+	if req.Content != nil {
+		baseHost := ""
+
+		frontUrl := w.System.BaseUrl
+		if w.System.FrontUrl != "" {
+			frontUrl = w.System.FrontUrl
+		}
+		urls, err := url.Parse(frontUrl)
+		if err == nil {
+			baseHost = urls.Host
+		}
+		// 过滤外链
+		if w.Content.FilterOutlink == 1 || w.Content.FilterOutlink == 2 {
+			re, _ := regexp.Compile(`(?i)<a.*?href="(.+?)".*?>(.*?)</a>`)
+			content = re.ReplaceAllStringFunc(content, func(s string) string {
+				match := re.FindStringSubmatch(s)
+				if len(match) < 3 {
+					return s
+				}
+				aUrl, err2 := url.Parse(match[1])
+				if err2 == nil {
+					if aUrl.Host != "" && aUrl.Host != baseHost {
+						//过滤外链
+						if w.Content.FilterOutlink == 1 {
+							return match[2]
+						} else if !strings.Contains(match[0], "nofollow") {
+							newUrl := match[1] + `" rel="nofollow`
+							s = strings.Replace(match[0], match[1], newUrl, 1)
+						}
+					}
+				}
+				return s
+			})
+		}
+		if w.Content.RemoteDownload == 1 {
+			re, _ := regexp.Compile(`(?i)<img.*?src="(.+?)".*?>`)
+			content = re.ReplaceAllStringFunc(content, func(s string) string {
+				match := re.FindStringSubmatch(s)
+				if len(match) < 2 {
+					return s
+				}
+				imgUrl, err2 := url.Parse(match[1])
+				if err2 == nil {
+					if imgUrl.Host != "" && imgUrl.Host != baseHost && !strings.HasPrefix(match[1], w.PluginStorage.StorageUrl) {
+						//外链
+						attachment, err2 := w.DownloadRemoteImage(match[1], "", 0)
+						if err2 == nil {
+							// 下载完成
+							s = strings.Replace(s, match[1], attachment.Logo, 1)
+						}
+					}
+				}
+				return s
+			})
+		}
+	}
+	material.Content = content
+	// md5 必须是**当前**内容的摘要。原来这一行在 content 赋值之前，
+	// 于是 md5 永远滞后一次，新建素材的 md5 恒为 md5("")。
+	material.Md5 = library.Md5(material.Content)
+
+	// 标题：nil = 保持原值；空串 = 按正文自动截取（历史语义，素材列表需要
+	// 一个可读标题）；非空 = 直接用。
+	if req.Title != nil && *req.Title != "" {
+		material.Title = *req.Title
+	} else if req.Title != nil || newPost {
+		runeContent := []rune(material.Content)
+		if len(runeContent) > 30 {
+			material.Title = string(runeContent[:30]) + "..."
+		} else {
+			material.Title = material.Content
+		}
+	}
+
+	err = w.DB.Save(material).Error
+
+	if err != nil {
+		return
+	}
+	//增加素材的时候，更新素材计数
+	var materialCount int64
+	w.DB.Model(&model.Material{}).Where("`category_id` = ?", material.CategoryId).Count(&materialCount)
+	w.DB.Model(&model.MaterialCategory{}).Where("`id` = ?", material.CategoryId).Update("material_count", materialCount)
+
+	//如果素材是自动更新，则自动
+	if material.AutoUpdate == 1 && strings.Compare(oldContent, material.Content) != 0 {
+		go w.AutoUpdateMaterial(material)
+	}
+
+	return
+}
+
+func (w *Website) GetMaterialById(id uint) (*model.Material, error) {
+	var material model.Material
+	if err := w.DB.Where("id = ?", id).First(&material).Error; err != nil {
+		return nil, err
+	}
+
+	return &material, nil
+}
+
+func (w *Website) DeleteMaterial(id uint) error {
+	material, err := w.GetMaterialById(id)
+	if err != nil {
+		return err
+	}
+
+	//删除素材，删除记录
+	w.DB.Unscoped().Where("`material_id` = ?", material.Id).Delete(model.MaterialData{})
+
+	//执行删除操作
+	err = w.DB.Delete(material).Error
+
+	if err != nil {
+		return err
+	}
+	//删除素材的时候，更新素材计数
+	var materialCount int64
+	w.DB.Model(&model.Material{}).Where("`category_id` = ?", material.CategoryId).Count(&materialCount)
+	w.DB.Model(&model.MaterialCategory{}).Where("`id` = ?", material.CategoryId).Update("material_count", materialCount)
+
+	return nil
+}
+
+// 获取所有分类
+func (w *Website) GetMaterialCategories() ([]*model.MaterialCategory, error) {
+	var categories []*model.MaterialCategory
+
+	err := w.DB.Where("`status` = 1").Find(&categories).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return categories, nil
+}
+
+func (w *Website) GetMaterialCategoryById(id uint) (*model.MaterialCategory, error) {
+	var category model.MaterialCategory
+	if err := w.DB.Where("id = ?", id).First(&category).Error; err != nil {
+		return nil, err
+	}
+
+	return &category, nil
+}
+
+func (w *Website) DeleteMaterialCategory(id uint) error {
+	category, err := w.GetMaterialCategoryById(id)
+	if err != nil {
+		return err
+	}
+
+	//如果存在内容，则不能删除
+	var materialCount int64
+	w.DB.Model(&model.Material{}).Where("`category_id` = ?", category.Id).Count(&materialCount)
+	if materialCount > 0 {
+		return errors.New(w.Tr("PleaseDeleteTheMaterialsUnderTheCategoryBeforeDeletingTheCategory"))
+	}
+
+	//执行删除操作
+	err = w.DB.Delete(category).Error
+
+	return err
+}
+
+func (w *Website) SaveMaterialCategory(req *request.PluginMaterialCategory) (category *model.MaterialCategory, err error) {
+	newPost := false
+	if req.Id > 0 {
+		category, err = w.GetMaterialCategoryById(req.Id)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		category = &model.MaterialCategory{
+			Status: 1,
+		}
+		newPost = true
+	}
+	force := req.UpdateAll && !req.Partial
+	library.Assign(&category.Title, req.Title, force)
+	// Status 的 0 是合法值（停用）。原实现硬编码 `Status = 1`，
+	// 导致素材分类永远无法停用，`GetMaterialCategories` 也就永远返回全部分类。
+	if newPost {
+		category.Status = library.DerefOr(req.Status, 1)
+	} else {
+		library.Assign(&category.Status, req.Status, force)
+	}
+
+	err = w.DB.Save(category).Error
+
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (w *Website) LogMaterialData(materialIds []uint, itemType string, itemId int64) {
+	//清理不存在的
+	w.DB.Unscoped().Model(&model.MaterialData{}).Where("`material_id` not in(?) and `item_type` = ? and `item_id` = ?", materialIds, itemType, itemId).Delete(model.MaterialData{})
+	//先检查是否存在
+	var dataCount int64
+	for _, materialId := range materialIds {
+		material, err := w.GetMaterialById(materialId)
+		if err != nil {
+			//素材被删了，不再入库
+			continue
+		}
+		w.DB.Model(&model.MaterialData{}).Where("`material_id` = ? and `item_type` = ? and `item_id` = ?", material.Id, itemType, itemId).Count(&dataCount)
+		if dataCount > 0 {
+			continue
+		}
+		//插入
+		data := model.MaterialData{
+			MaterialId: materialId,
+			ItemType:   itemType,
+			ItemId:     itemId,
+		}
+
+		w.DB.Save(&data)
+
+		//更新素材使用计数
+		var useCount int64
+		w.DB.Model(&model.MaterialData{}).Where("`material_id` = ?", material.Id).Count(&useCount)
+		w.DB.Model(&model.Material{}).Where("`id` = ?", material.Id).Update("use_count", useCount)
+	}
+}
+
+// 自动更新素材
+func (w *Website) AutoUpdateMaterial(material *model.Material) {
+	if material.AutoUpdate != 1 {
+		return
+	}
+
+	//检查有多少个内容使用了这个素材
+	var materialData []*model.MaterialData
+	w.DB.Where("`material_id` = ?", material.Id).Find(&materialData)
+	for _, datum := range materialData {
+		archiveData, err := w.GetArchiveDataById(datum.ItemId)
+		if err == nil {
+			//可以操作
+			htmlR := strings.NewReader(archiveData.Content)
+			doc, err := goquery.NewDocumentFromReader(htmlR)
+			if err == nil {
+				doc.Find(fmt.Sprintf("div[data-material=\"%d\"]", material.Id)).Each(func(i int, s *goquery.Selection) {
+					s.ReplaceWithHtml(fmt.Sprintf("<div data-material=\"%d\">%s</div>", material.Id, material.Content))
+				})
+
+				//如果有替换，则更新
+				content, _ := doc.Find("body").Html()
+				if strings.Compare(archiveData.Content, content) != 0 {
+					archiveData.Content = content
+					w.DB.Save(archiveData)
+				}
+			}
+		}
+	}
+}
+
+func (w *Website) SaveMaterials(materials []*request.PluginMaterial) error {
+	var exists model.Material
+	var err error
+	var categoryIds = map[uint]struct{}{}
+	for i := range materials {
+		var material model.Material
+		if materials[i].Id > 0 {
+			err = w.DB.Where("id = ?", materials[i].Id).Take(&material).Error
+			if err != nil {
+				//不存在，跳过
+				continue
+			}
+		}
+		// 批量导入是「全量写入」场景，nil 与零值等价，直接解引用即可。
+		content := library.Deref(materials[i].Content)
+		title := library.Deref(materials[i].Title)
+		md5Str := library.Md5(content)
+		err = w.DB.Where("md5 = ?", md5Str).Take(&exists).Error
+		if err == nil {
+			//已存在，更新
+			material = exists
+		}
+		//开始操作数据
+		material.Content = content
+		material.CategoryId = library.Deref(materials[i].CategoryId)
+		material.Md5 = md5Str
+		if title == "" {
+			runeContent := []rune(content)
+			if len(runeContent) > 30 {
+				title = string(runeContent[:30]) + "..."
+			} else {
+				title = content
+			}
+		}
+		material.Title = title
+		material.AutoUpdate = library.Deref(materials[i].AutoUpdate)
+		material.Status = 1
+		//入库
+		w.DB.Save(&material)
+
+		categoryIds[material.CategoryId] = struct{}{}
+	}
+
+	// 更新category
+	for categoryId := range categoryIds {
+		var total int64
+		w.DB.Model(&model.Material{}).Where("category_id = ?", categoryId).Count(&total)
+		w.DB.Model(&model.MaterialCategory{}).Where("id = ?", categoryId).UpdateColumn("material_count", total)
+	}
+
+	return nil
+}
+
+func (w *Website) GetMaterialByTitle(title string) (*model.Material, error) {
+	// title 可能包含标签
+	title = library.StripTags(title)
+	title = strings.ReplaceAll(title, "\n", "")
+	// 取前30个字符
+	if utf8.RuneCountInString(title) > 30 {
+		title = string([]rune(title)[:30])
+	}
+	var material model.Material
+	err := w.DB.Where("`title` like ?", title+"%").Take(&material).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &material, nil
+}
+
+func (w *Website) GetMaterialByOriginUrl(originUrl string) (*model.Material, error) {
+	var material model.Material
+	err := w.DB.Where("`origin_url` = ?", originUrl).Take(&material).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &material, nil
+}
+
+func (w *Website) GetMaterialsByKeyword(keyword string) []*model.Material {
+	var materials []*model.Material
+	w.DB.Where("`keyword` = ?", keyword).Find(&materials)
+
+	return materials
+}

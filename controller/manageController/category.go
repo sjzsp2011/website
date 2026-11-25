@@ -1,0 +1,353 @@
+package manageController
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/kataras/iris/v12"
+	"gorm.io/gorm"
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider"
+	"kandaoni.com/anqicms/request"
+)
+
+// CategoryList 查询分类/单页面列表（树状结构），可按模型与类型筛选。
+//
+// 参数说明：
+//   - 查询参数 "module_id": 按模型 ID 筛选，0 表示不限。
+//   - 查询参数 "type": 按分类类型筛选，0 表示不限：1 表示文档分类，3 表示单页面。
+//   - 参数查询 "show_type": 显示模式，0 显示树状结构，1 显示列表结构。
+//   - 查询参数 "title": 按分类名称模糊搜索。
+func CategoryList(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	moduleId := uint(ctx.URLParamIntDefault("module_id", 0))
+	categoryType := uint(ctx.URLParamIntDefault("type", 0))
+	showType := ctx.URLParamIntDefault("show_type", 0)
+	title := ctx.URLParam("title")
+
+	var categories []*model.Category
+	var err error
+	var ops func(tx *gorm.DB) *gorm.DB
+	if categoryType == config.CategoryTypePage {
+		ops = func(tx *gorm.DB) *gorm.DB {
+			tx = tx.Where("`type` = ?", config.CategoryTypePage).Order("sort asc")
+			if title != "" {
+				tx = tx.Where("`title` like ?", "%"+title+"%")
+			}
+			return tx
+		}
+	} else {
+		ops = func(tx *gorm.DB) *gorm.DB {
+			tx = tx.Where("`type` = ?", config.CategoryTypeArchive).Order("module_id asc,sort asc")
+			if moduleId > 0 {
+				tx = tx.Where("`module_id` = ?", moduleId)
+			}
+			if title != "" {
+				tx = tx.Where("`title` like ?", "%"+title+"%")
+			}
+			return tx
+		}
+	}
+	// 搜索模式下，不构建tree
+	if title != "" {
+		showType = config.CategoryShowTypeList
+	}
+	categories, err = currentSite.GetCategories(ops, 0, showType)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	modules, _ := currentSite.GetModules()
+	var mapModules = make(map[uint]model.Module)
+	for i := range modules {
+		mapModules[modules[i].Id] = modules[i]
+	}
+
+	for i := range categories {
+		categories[i].Link = currentSite.GetUrl("category", categories[i], 0)
+		// 计算template
+		if categories[i].Template == "" {
+			// 默认的
+			if categories[i].Type == config.CategoryTypePage {
+				categories[i].Template = ctx.Tr("(Default)") + " page/detail.html"
+				tmpTpl, ok := currentSite.TemplateExist("page_detail.html")
+				if ok {
+					categories[i].Template = ctx.Tr("(Default)") + " " + tmpTpl
+				}
+				tmpTpl0 := fmt.Sprintf("page/%s.html", categories[i].UrlToken)
+				tmpTpl1 := fmt.Sprintf("page/detail-%d.html", categories[i].Id)
+				tmpTpl2 := fmt.Sprintf("page-%d.html", categories[i].Id)
+				tmpTpl, ok = currentSite.TemplateExist(tmpTpl0, tmpTpl1, tmpTpl2)
+				if ok {
+					categories[i].Template = "(ID) " + tmpTpl
+				}
+				categoryTemplate := currentSite.GetCategoryTemplate(categories[i])
+				if categoryTemplate != nil {
+					categories[i].Template = categoryTemplate.Template
+				}
+			} else {
+				categories[i].Template = ctx.Tr("(Default)") + mapModules[categories[i].ModuleId].TableName + "/list.html"
+				tplName2 := mapModules[categories[i].ModuleId].TableName + "_list.html"
+				tmpTpl, ok := currentSite.TemplateExist(tplName2)
+				if ok {
+					categories[i].Template = ctx.Tr("(Default)") + tmpTpl
+				}
+				tmpTpl0 := fmt.Sprintf("%s/%s.html", mapModules[categories[i].ModuleId].TableName, categories[i].UrlToken)
+				tmpTpl1 := fmt.Sprintf("%s/list-%d.html", mapModules[categories[i].ModuleId].TableName, categories[i].Id)
+				tmpTpl, ok = currentSite.TemplateExist(tmpTpl0, tmpTpl1)
+				if ok {
+					categories[i].Template = "(ID) " + tmpTpl
+				}
+				// 跟随上级
+				if categories[i].ParentId > 0 {
+					categoryTemplate := currentSite.GetCategoryTemplate(categories[i])
+					if categoryTemplate != nil && len(categoryTemplate.Template) > 0 {
+						categories[i].Template = ctx.Tr("(Inherited)") + categoryTemplate.Template
+					}
+					if categories[i].DetailTemplate == "" && categoryTemplate != nil && len(categoryTemplate.DetailTemplate) > 0 {
+						categories[i].DetailTemplate = ctx.Tr("(Inherited)") + categoryTemplate.DetailTemplate
+					}
+				}
+			}
+		}
+		// 计算内容template
+		if categories[i].DetailTemplate == "" && categories[i].Type != config.CategoryTypePage {
+			categories[i].DetailTemplate = ctx.Tr("(Default)") + mapModules[categories[i].ModuleId].TableName + "/detail.html"
+			tplName2 := mapModules[categories[i].ModuleId].TableName + "_detail.html"
+			tmpTpl, ok := currentSite.TemplateExist(tplName2)
+			if ok {
+				categories[i].DetailTemplate = ctx.Tr("(Default)") + tmpTpl
+			}
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": categories,
+	})
+}
+
+// CategoryDetail 查询单个分类的详情。
+//
+// 参数说明：
+//   - 查询参数 "id": 分类 ID，必填。
+func CategoryDetail(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	id := uint(ctx.URLParamIntDefault("id", 0))
+
+	category, err := currentSite.GetCategoryById(id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	category.Content = currentSite.ReplaceContentUrl(category.Content, true)
+	// extra replace
+	if category.Extra != nil {
+		module := currentSite.GetModuleFromCache(category.ModuleId)
+		if module != nil && len(module.CategoryFields) > 0 {
+			for _, field := range module.CategoryFields {
+				if (field.Type == config.CustomFieldTypeImage || field.Type == config.CustomFieldTypeFile || field.Type == config.CustomFieldTypeEditor) &&
+					category.Extra[field.FieldName] != nil {
+					category.Extra[field.FieldName] = currentSite.ReplaceContentUrl(category.Extra[field.FieldName].(string), true)
+				}
+				if field.Type == config.CustomFieldTypeImages && category.Extra[field.FieldName] != nil {
+					if val, ok := category.Extra[field.FieldName].([]interface{}); ok {
+						for j, v2 := range val {
+							v2s, _ := v2.(string)
+							val[j] = currentSite.ReplaceContentUrl(v2s, true)
+						}
+						category.Extra[field.FieldName] = val
+					}
+				} else if field.Type == config.CustomFieldTypeTexts && category.Extra[field.FieldName] != nil {
+					var texts []config.CustomFieldTexts
+					_ = json.Unmarshal([]byte(fmt.Sprint(category.Extra[field.FieldName])), &texts)
+					category.Extra[field.FieldName] = texts
+				} else if field.Type == config.CustomFieldTypeTimeline && category.Extra[field.FieldName] != nil {
+					var val config.TimelineField
+					_ = json.Unmarshal([]byte(fmt.Sprint(category.Extra[field.FieldName])), &val)
+					category.Extra[field.FieldName] = val
+				}
+			}
+		}
+	}
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  "",
+		"data": category,
+	})
+}
+
+// CategoryDetailForm 新建或更新分类。
+func CategoryDetailForm(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.Category
+	if !readJSONPayload(ctx, &req) {
+		return
+	}
+	// UpdateAll 决定「未传的字段」怎么处理：
+	//   true  —— 全量覆盖。未传=零值的字段会被清空。这是**表单提交**的语义：
+	//            前端提交整个表单，某个字段没出现在表单里就意味着用户清空了它。
+	//   false —— PATCH 语义。只覆盖显式传入的字段，未传的一律保持库里的原值。
+	//            这是 **AI/程序化调用**需要的语义：只想改标题，不该动其它字段。
+	//
+	// 用 Partial（反向开关）而非直接暴露 UpdateAll，是为了区分「调用方没传这个字段」
+	// 与「调用方显式传了 false」——Go 的 bool 零值做不到，前端又不传该字段。
+	// Partial 优先于调用方传的 update_all。
+	if !req.Partial {
+		req.UpdateAll = true
+	}
+
+	category, err := currentSite.SaveCategory(&req)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 插入记录
+				if req.Id == 0 {
+					req.Id = category.Id
+					subCategory, err := subSite.SaveCategory(&req)
+					if err == nil {
+						// 同步成功，进行翻译
+						if currentSite.MultiLanguage.AutoTranslate {
+							transReq := &provider.AnqiTranslateTextRequest{
+								Text: []string{
+									subCategory.Title,       // 0
+									subCategory.Description, // 1
+									subCategory.Keywords,    // 2
+									subCategory.Content,     // 3
+								},
+								Language:   currentSite.System.Language,
+								ToLanguage: subSite.System.Language,
+							}
+							res, err := currentSite.AnqiTranslateString(transReq)
+							if err == nil {
+								// 只处理成功的结果
+								subSite.DB.Model(subCategory).UpdateColumns(map[string]interface{}{
+									"title":       res.Text[0],
+									"description": res.Text[1],
+									"keywords":    res.Text[2],
+									"content":     res.Text[3],
+								})
+							}
+						}
+					}
+				} else {
+					// 修改的话，就排除 title, content，description，keywords 字段
+					tmpCategory, err := subSite.GetCategoryById(req.Id)
+					if err == nil {
+						req.Title = tmpCategory.Title
+						req.Content = library.Ptr(tmpCategory.Content)
+						req.Description = library.Ptr(tmpCategory.Description)
+						req.Keywords = library.Ptr(tmpCategory.Keywords)
+					}
+					_, _ = subSite.SaveCategory(&req)
+				}
+			}
+		}
+	}
+
+	// 更新缓存
+	go func() {
+		currentSite.BuildModuleCache(ctx)
+		currentSite.BuildSingleCategoryCache(ctx, category)
+		// 上传到静态服务器
+		_ = currentSite.SyncHtmlCacheToStorage("", "")
+	}()
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("SaveDocumentCategoryLog", category.Id, category.Title))
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("SaveSuccessfully"),
+		"data": category,
+	})
+}
+
+// CategoryDelete 删除指定分类。
+func CategoryDelete(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+	var req request.CategoryDeleteRequest
+	if err := ctx.ReadJSON(&req); err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	category, err := currentSite.GetCategoryById(req.Id)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+
+	err = category.Delete(currentSite.DB)
+	if err != nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  err.Error(),
+		})
+		return
+	}
+	// 如果开启了多语言，则自动同步文章,分类
+	if currentSite.MultiLanguage.Open {
+		for _, sub := range currentSite.MultiLanguage.SubSites {
+			if sub.Id == currentSite.Id || sub.Id == 0 {
+				continue
+			}
+			// 同步分类，先同步，再添加翻译计划
+			subSite := provider.GetWebsite(sub.Id)
+			if subSite != nil && subSite.Initialed {
+				// 同步删除
+				_ = category.Delete(subSite.DB)
+			}
+		}
+	}
+
+	currentSite.AddAdminLog(ctx, ctx.Tr("DeleteDocumentCategoryLog", category.Id, category.Title))
+
+	currentSite.DeleteCacheCategories()
+	currentSite.DeleteCacheIndex()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("CategoryDeleted"),
+	})
+}
+
+// CategoryUpdateArchiveCount 重新统计各分类下的文档数量。
+func CategoryUpdateArchiveCount(ctx iris.Context) {
+	currentSite := provider.CurrentSubSite(ctx)
+
+	currentSite.UpdateCategoryArchiveCounts()
+
+	ctx.JSON(iris.Map{
+		"code": config.StatusOK,
+		"msg":  ctx.Tr("SaveSuccessfully"),
+	})
+}

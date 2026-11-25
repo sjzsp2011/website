@@ -1,0 +1,675 @@
+package provider
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"gorm.io/gorm"
+
+	"kandaoni.com/anqicms/config"
+	"kandaoni.com/anqicms/library"
+	"kandaoni.com/anqicms/model"
+	"kandaoni.com/anqicms/provider/fulltext"
+	"kandaoni.com/anqicms/request"
+)
+
+// GetTagList 分页查询标签列表。
+//
+// offset 由调用方显式计算后传入，这里不再按页码二次推算——否则调用方算好的
+// 偏移会被静默覆盖，`limit=20,10` 这类显式偏移与 `page` 混用时行为不可预期。
+//
+// needTotal 为 false 时**不执行 count**。tags 表在真实站点上轻易到十几万行
+// （采集/导入的残留标签），一次 SELECT count(*) 就是一次全索引扫描，
+// 而不分页的 list 调用方根本用不到精确总数。曾经因为每个 tag 列表请求都无条件
+// count，叠加扒站方按 ?page=N 无限翻页，单机打出 60 条/分的慢查询把 CPU 拉满。
+func (w *Website) GetTagList(itemId int64, title string, categoryIds []uint, firstLetter string, offset, pageSize int, needTotal bool, order string) ([]*model.Tag, int64, error) {
+	var tags []*model.Tag
+	if order != "" {
+		order = ParseOrderBy(order, "")
+	} else {
+		// 默认排序规则
+		order = "id desc"
+	}
+
+	// itemId 过滤用的 tag_id 先查出来，供列表查询与 count 估算共用。
+	var itemTagIds []uint
+	if itemId != 0 {
+		w.DB.WithContext(w.Ctx()).Model(&model.TagData{}).Where("`item_id` = ?", itemId).Pluck("tag_id", &itemTagIds)
+		if len(itemTagIds) == 0 {
+			// 不用再查询了，直接返回结果
+			return tags, 0, nil
+		}
+	}
+
+	// 筛选条件只声明一次，列表查询与 count 估算共用，避免两条路径条件漂移。
+	apply := func(db *gorm.DB) *gorm.DB {
+		if firstLetter != "" {
+			db = db.Where("`first_letter` = ?", firstLetter)
+		}
+		if len(itemTagIds) > 0 {
+			db = db.Where("`id` IN(?)", itemTagIds)
+		}
+		if title != "" {
+			db = db.Where("`title` like ?", "%"+title+"%")
+		}
+		if len(categoryIds) > 0 {
+			if len(categoryIds) == 1 {
+				db = db.Where("`category_id` = ?", categoryIds[0])
+			} else {
+				db = db.Where("`category_id` IN(?)", categoryIds)
+			}
+		}
+		return db
+	}
+
+	builder := apply(w.DB.WithContext(w.Ctx()).Model(&model.Tag{})).Order(order)
+
+	if !needTotal {
+		// list 模式：跳过 count，total 退回本页条数（与 GetArchiveList 一致）。
+		if err := builder.Limit(pageSize).Offset(offset).Find(&tags).Error; err != nil {
+			return nil, 0, err
+		}
+		return tags, int64(len(tags)), nil
+	}
+
+	// 分页模式：count 结果缓存 300s；行数超 10 万的表用 EXPLAIN 估算，
+	// 不再真扫全表。与 GetArchiveList 的处理方式保持一致。
+	var total int64
+	// 用参数化 SQL + Vars 做 EXPLAIN，杜绝 ToSQL 内联带来的反斜杠+引号注入（issue #93）。
+	sqlCount, countVars := w.dryRunSQL(func(tx *gorm.DB) *gorm.DB {
+		return apply(tx.WithContext(w.Ctx()).Model(&model.Tag{})).Order(order).Find(&[]*model.Tag{})
+	})
+	cacheKeyCount := "tag-list-count-" + library.Md5(fmt.Sprintf("%s|%#v", sqlCount, countVars))[8:24]
+	// Cache 可能是 nil（半初始化的站点，见 anchor_test.go 的注释），
+	// 缓存只是优化，缺了不能影响取数。
+	cacheHit := false
+	if w.Cache != nil {
+		if err := w.Cache.Get(cacheKeyCount, &total); err == nil {
+			cacheHit = true
+		}
+	}
+	if !cacheHit {
+		total = w.GetExplainCountParams(sqlCount, countVars...)
+		if total < 100000 {
+			if countErr := builder.Count(&total).Error; countErr != nil {
+				return nil, 0, countErr
+			}
+		}
+		if w.Cache != nil {
+			_ = w.Cache.Set(cacheKeyCount, total, 300)
+		}
+	}
+
+	if err := builder.Limit(pageSize).Offset(offset).Find(&tags).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return tags, total, nil
+}
+
+func (w *Website) GetTagsByIds(ids []uint) []*model.Tag {
+	var tags []*model.Tag
+	w.DB.WithContext(w.Ctx()).Model(&model.Tag{}).Where("`id` IN(?)", ids).Find(&tags)
+
+	return tags
+}
+
+func (w *Website) GetTagById(id uint) (*model.Tag, error) {
+	var tag model.Tag
+	if err := w.DB.WithContext(w.Ctx()).Where("id = ?", id).First(&tag).Error; err != nil {
+		return nil, err
+	}
+
+	return &tag, nil
+}
+
+func (w *Website) GetTagContentById(id uint) (*model.TagContent, error) {
+	var tagContent model.TagContent
+	if err := w.DB.WithContext(w.Ctx()).Where("id = ?", id).First(&tagContent).Error; err != nil {
+		return nil, err
+	}
+	tagContent.Content = w.ReplaceContentUrl(tagContent.Content, true)
+
+	return &tagContent, nil
+}
+
+func (w *Website) GetTagByUrlToken(urlToken string) (*model.Tag, error) {
+	var tag model.Tag
+	if err := w.DB.WithContext(w.Ctx()).Where("url_token = ?", urlToken).First(&tag).Error; err != nil {
+		return nil, err
+	}
+	tag.GetThumb(w.PluginStorage.StorageUrl, w.GetDefaultThumb(int(tag.Id)))
+	return &tag, nil
+}
+
+func (w *Website) GetTagByTitle(title string) (*model.Tag, error) {
+	var tag model.Tag
+	if err := w.DB.Where("`title` = ?", title).First(&tag).Error; err != nil {
+		return nil, err
+	}
+	return &tag, nil
+}
+
+func (w *Website) DeleteTag(id uint) error {
+	tag, err := w.GetTagById(id)
+	if err != nil {
+		return err
+	}
+
+	//删除记录
+	w.DB.Unscoped().Where("`tag_id` = ?", tag.Id).Delete(model.TagData{})
+	w.DB.Unscoped().Where("`id` = ?", tag.Id).Delete(model.TagContent{})
+
+	//执行删除操作
+	err = w.DB.Delete(tag).Error
+
+	if err != nil {
+		return err
+	}
+	w.RemoveFulltextIndex(fulltext.TinyArchive{Id: int64(tag.Id), Type: fulltext.TagType})
+
+	return nil
+}
+
+func (w *Website) SaveTag(req *request.PluginTag) (tag *model.Tag, err error) {
+	newPost := false
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Id > 0 {
+		// 有 id 就按 id 定位：更新时不传标题 = 不改标题。
+		tag, err = w.GetTagById(req.Id)
+		if err != nil {
+			// 表示不存在，则新建一个
+			tag = &model.Tag{
+				Status: 1,
+			}
+			tag.Id = req.Id
+			newPost = true
+		}
+	} else {
+		// 没给 id：按标题查重（同名视为同一个标签），空标题没法查。
+		if len(req.Title) == 0 {
+			return nil, errors.New(w.Tr("TagNameCannotBeEmpty"))
+		}
+		tag, err = w.GetTagByTitle(req.Title)
+		if err != nil {
+			tag = &model.Tag{
+				Status: 1,
+			}
+			newPost = true
+		}
+	}
+	// 只有「新建」才强制要求标题。原来是无条件要求，于是 PATCH
+	// 「把 5 号标签隐藏」（只传 id + status）会被判成「标签名称不能为空」。
+	if newPost && len(req.Title) == 0 {
+		return nil, errors.New(w.Tr("TagNameCannotBeEmpty"))
+	}
+	// 标题必填，空值永远不是合法写入值：UpdateAll 下漏传也不能把已有名字清空。
+	if req.Title != "" {
+		tag.Title = req.Title
+	}
+	if req.SeoTitle != nil {
+		tag.SeoTitle = *req.SeoTitle
+	}
+	if req.Keywords != nil {
+		tag.Keywords = *req.Keywords
+	}
+	// 原来这里硬编码 tag.Status = 1，标签永远无法隐藏。
+	if req.Status != nil {
+		tag.Status = *req.Status
+	}
+	if req.Description != nil {
+		tag.Description = *req.Description
+	}
+	if req.FirstLetter != nil {
+		tag.FirstLetter = *req.FirstLetter
+	}
+	if req.CategoryId != nil {
+		tag.CategoryId = *req.CategoryId
+	}
+	if req.Template != nil {
+		tag.Template = *req.Template
+	}
+	if req.Logo != nil {
+		tag.Logo = *req.Logo
+	}
+	if tag.Logo != "" {
+		tag.Logo = strings.TrimPrefix(tag.Logo, w.PluginStorage.StorageUrl)
+	}
+	// 判断重复
+	if req.UpdateAll || req.UrlToken != "" {
+		tag.UrlToken = w.VerifyTagUrlToken(req.UrlToken, tag.Title, tag.Id)
+	}
+
+	if tag.FirstLetter == "" {
+		letter := "A"
+		if tag.UrlToken != "" && tag.UrlToken != "-" {
+			letter = string(tag.UrlToken[0])
+		}
+		tag.FirstLetter = strings.ToUpper(letter)
+	}
+
+	err = w.DB.Save(tag).Error
+
+	if err != nil {
+		return
+	}
+	w.CleanCachedTags()
+	// 保存 content：nil = 不改内容表，非 nil（含空串）= 覆盖。
+	content := ""
+	if req.Content != nil || len(req.Extra) > 0 {
+		if req.Content != nil {
+			// 将单个&nbsp;替换为空格
+			content = library.ReplaceSingleSpace(*req.Content)
+			// todo 应该只替换 src,href 中的 baseUrl
+			content = w.ReplaceContentUrl(content, false)
+			// 过滤外链
+			if w.Content.FilterOutlink == 1 || w.Content.FilterOutlink == 2 {
+				baseHost := ""
+				frontUrl := w.System.BaseUrl
+				if w.System.FrontUrl != "" {
+					frontUrl = w.System.FrontUrl
+				}
+				urls, err := url.Parse(frontUrl)
+				if err == nil {
+					baseHost = urls.Host
+				}
+
+				re, _ := regexp.Compile(`(?i)<a.*?href="(.+?)".*?>(.*?)</a>`)
+				content = re.ReplaceAllStringFunc(content, func(s string) string {
+					match := re.FindStringSubmatch(s)
+					if len(match) < 3 {
+						return s
+					}
+					aUrl, err2 := url.Parse(match[1])
+					if err2 == nil {
+						if aUrl.Host != "" && aUrl.Host != baseHost {
+							//过滤外链
+							if w.Content.FilterOutlink == 1 {
+								return match[2]
+							} else if !strings.Contains(match[0], "nofollow") {
+								newUrl := match[1] + `" rel="nofollow`
+								s = strings.Replace(s, match[1], newUrl, 1)
+							}
+						}
+					}
+					return s
+				})
+				// 匹配Markdown [link](url)
+				// 由于不支持零宽断言，因此匹配所有
+				re, _ = regexp.Compile(`!?\[([^]]*)\]\(([^)]+)\)`)
+				content = re.ReplaceAllStringFunc(content, func(s string) string {
+					// 过滤掉 ! 开头的
+					if strings.HasPrefix(s, "!") {
+						return s
+					}
+					match := re.FindStringSubmatch(s)
+					if len(match) < 3 {
+						return s
+					}
+					aUrl, err2 := url.Parse(match[2])
+					if err2 == nil {
+						if aUrl.Host != "" && aUrl.Host != baseHost {
+							//过滤外链
+							if w.Content.FilterOutlink == 1 {
+								return match[1]
+							}
+							// 添加 nofollow 不在这里处理，因为md不支持
+						}
+					}
+					return s
+				})
+			}
+		}
+		if req.Extra != nil {
+			fields := w.GetTagFields()
+			if len(fields) > 0 {
+				for _, field := range fields {
+					if (field.Type == config.CustomFieldTypeImage || field.Type == config.CustomFieldTypeFile || field.Type == config.CustomFieldTypeEditor) &&
+						req.Extra[field.FieldName] != nil {
+						value, ok := req.Extra[field.FieldName].(string)
+						if ok {
+							req.Extra[field.FieldName] = w.ReplaceContentUrl(value, false)
+						}
+					}
+					if field.Type == config.CustomFieldTypeImages {
+						if val, ok := req.Extra[field.FieldName].([]interface{}); ok {
+							for j, v2 := range val {
+								v2s, _ := v2.(string)
+								val[j] = w.ReplaceContentUrl(v2s, false)
+							}
+							req.Extra[field.FieldName] = val
+						}
+					} else if field.Type == config.CustomFieldTypeTexts && req.Extra[field.FieldName] != nil {
+						buf, _ := json.Marshal(req.Extra[field.FieldName])
+						req.Extra[field.FieldName] = string(buf)
+					} else if field.Type == config.CustomFieldTypeTimeline {
+						// 存 json
+						buf, _ := json.Marshal(req.Extra[field.FieldName])
+						req.Extra[field.FieldName] = string(buf)
+					}
+				}
+			}
+		}
+		// 只传 content 或只传 extra 时，另一侧必须保持库里原值：
+		// GORM Save 写全列，直接写 nil 会把已有的扩展字段/正文抹掉。
+		var existContent model.TagContent
+		_ = w.DB.Where("`id` = ?", tag.Id).Limit(1).Find(&existContent).Error
+		tagContent := &model.TagContent{
+			Id:      tag.Id,
+			Content: existContent.Content,
+			Extra:   existContent.Extra,
+		}
+		if req.Content != nil {
+			tagContent.Content = content
+		}
+		if req.Extra != nil {
+			tagContent.Extra = req.Extra
+		}
+		err = w.DB.Save(tagContent).Error
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if newPost && tag.Status == config.ContentStatusOK {
+		link := w.GetUrl("tag", tag, 0)
+		go w.PushArchives([]string{link})
+		if w.PluginSitemap.AutoBuild == 1 {
+			_ = w.AddonSitemap("tag", link, time.Unix(tag.CreatedTime, 0).Format("2006-01-02"), tag)
+		}
+	}
+	if w.PluginFulltext.UseTag {
+		w.AddFulltextIndex(fulltext.TinyArchive{
+			Id:          int64(tag.Id),
+			Type:        fulltext.TagType,
+			Title:       tag.Title,
+			Keywords:    tag.Keywords,
+			Description: tag.Description,
+		})
+		w.FlushIndex()
+	}
+
+	return
+}
+
+func (w *Website) SaveTagData(itemId int64, tagNames []string) error {
+	if len(tagNames) == 0 {
+		w.DB.Where("`item_id` = ?", itemId).Delete(&model.TagData{})
+		return nil
+	}
+	var tagIds = make([]uint, 0, len(tagNames))
+	for _, tagName := range tagNames {
+		if tagName == "" {
+			continue
+		}
+		tag, err := w.GetTagByTitle(tagName)
+		if err != nil {
+			newToken := w.VerifyTagUrlToken("", tagName, 0)
+			letter := "A"
+			if len(newToken) > 0 && newToken != "-" {
+				letter = string(newToken[0])
+			}
+			tag = &model.Tag{
+				Title:       tagName,
+				UrlToken:    newToken,
+				FirstLetter: strings.ToUpper(letter),
+				Status:      1,
+			}
+			w.DB.Where("`title` = ?", tag.Title).FirstOrCreate(tag)
+
+			link := w.GetUrl("tag", tag, 0)
+			go w.PushArchives([]string{link})
+			if w.PluginSitemap.AutoBuild == 1 {
+				go w.AddonSitemap("tag", link, time.Unix(tag.CreatedTime, 0).Format("2006-01-02"), tag)
+			}
+		}
+		tagIds = append(tagIds, tag.Id)
+		tagData := model.TagData{
+			TagId:  tag.Id,
+			ItemId: itemId,
+		}
+		w.DB.Where("`item_id` = ? and `tag_id` = ?", itemId, tagData.TagId).FirstOrCreate(&tagData)
+	}
+	w.DB.Where("`item_id` = ? and `tag_id` not in(?)", itemId, tagIds).Delete(&model.TagData{})
+
+	return nil
+}
+
+type CacheTag struct {
+	Id    uint   `json:"id"`
+	Title string `json:"title"`
+}
+
+func (w *Website) CleanCachedTags() {
+	w.Cache.Delete("cached_tags")
+}
+
+func (w *Website) GetCachedTags() []*CacheTag {
+	var tags []*CacheTag
+	err := w.Cache.Get("cached_tags", &tags)
+	if err != nil {
+		// 最多获取10万
+		w.DB.Model(&model.Tag{}).Where("status = 1").Select("id", "title").Order("id desc").Limit(100000).Scan(&tags)
+		// 每次缓存 10分钟
+		w.Cache.Set("cached_tags", tags, 600)
+	}
+
+	return tags
+}
+
+// AutoMatchTag 实现 tag 匹配，并添加到 model.TagData
+// 匹配 title，keywords，description
+// 使用 AC 自动机高效匹配，最多匹配 5 个 tag
+func (w *Website) AutoMatchTag(archive *model.Archive) error {
+	if w.Content.MatchTag != 1 {
+		return nil
+	}
+	if archive == nil {
+		return nil
+	}
+	// 如果已经存在标签了，则不再匹配
+	var existCount int64
+	w.DB.Model(&model.TagData{}).Where("`item_id` = ?", archive.Id).Count(&existCount)
+	if existCount > 0 {
+		return nil
+	}
+	// 获取所有 tags
+	tags := w.GetCachedTags()
+	if len(tags) == 0 {
+		return nil
+	}
+
+	// 将 title、keywords、description 拼接成一个待匹配的文本
+	keywords := strings.ReplaceAll(archive.Keywords, ",", " ")
+	keywords = strings.ReplaceAll(keywords, "，", " ")
+	content := archive.Title + " " + keywords + " " + archive.Description
+	content = strings.ToLower(content)
+
+	// 构建 AC 自动机
+	ac := NewACAutomaton()
+	for _, tag := range tags {
+		if tag.Title == "" {
+			continue
+		}
+		ac.AddPattern(strings.ToLower(tag.Title), tag.Id)
+	}
+	ac.Build()
+
+	// 使用 AC 自动机匹配，最多 5 个
+	matches := ac.Search(content, 5)
+	matchedTagIds := make(map[uint]bool, len(matches))
+	for _, m := range matches {
+		matchedTagIds[m.TagId] = true
+	}
+
+	// 获取当前文档已有的 tagIds
+	// var existingTagIds []uint
+	// w.DB.WithContext(w.Ctx()).Model(&model.TagData{}).
+	// 	Where("`item_id` = ?", archive.Id).
+	// 	Pluck("tag_id", &existingTagIds)
+
+	// existingSet := make(map[uint]bool, len(existingTagIds))
+	// for _, id := range existingTagIds {
+	// 	existingSet[id] = true
+	// }
+
+	// 添加新匹配的 tag
+	for tagId := range matchedTagIds {
+		// if existingSet[tagId] {
+		// 	continue
+		// }
+		tagData := model.TagData{
+			TagId:  tagId,
+			ItemId: archive.Id,
+		}
+		w.DB.Where("`item_id` = ? and `tag_id` = ?", archive.Id, tagId).
+			FirstOrCreate(&tagData)
+	}
+
+	// 删除不再匹配的 tag
+	// var toDelete []uint
+	// for _, id := range existingTagIds {
+	// 	if !matchedTagIds[id] {
+	// 		toDelete = append(toDelete, id)
+	// 	}
+	// }
+	// if len(toDelete) > 0 {
+	// 	w.DB.Where("`item_id` = ? and `tag_id` in(?)", archive.Id, toDelete).
+	// 		Delete(&model.TagData{})
+	// }
+
+	return nil
+}
+
+func (w *Website) GetTagsByItemId(itemId int64) []*model.Tag {
+	var tags []*model.Tag
+	var tagIds []uint
+	err := w.DB.WithContext(w.Ctx()).Model(&model.TagData{}).Where("`item_id` = ?", itemId).Pluck("tag_id", &tagIds).Error
+	if err != nil {
+		return nil
+	}
+	if len(tagIds) > 0 {
+		w.DB.Where("id IN(?)", tagIds).Find(&tags)
+	}
+	for _, tag := range tags {
+		tag.Link = w.GetUrl(PatternTag, tag, 0)
+	}
+
+	return tags
+}
+
+func (w *Website) GetTagsByItemIds(itemIds []int64) map[int64][]*model.Tag {
+	var tags []*model.Tag
+	var tagData []*model.TagData
+	w.DB.WithContext(w.Ctx()).Model(&model.TagData{}).Where("`item_id` in(?)", itemIds).Find(&tagData)
+	var tagIds []uint
+	for _, datum := range tagData {
+		tagIds = append(tagIds, datum.TagId)
+	}
+	if len(tagIds) > 0 {
+		w.DB.Where("id IN(?)", tagIds).Find(&tags)
+	}
+	var result = make(map[int64][]*model.Tag)
+	for _, tag := range tags {
+		tag.Link = w.GetUrl(PatternTag, tag, 0)
+		for _, datum := range tagData {
+			if datum.TagId == tag.Id {
+				tag.ItemId = datum.ItemId
+				result[datum.ItemId] = append(result[datum.ItemId], tag)
+			}
+		}
+	}
+
+	return result
+}
+
+func (w *Website) VerifyTagUrlToken(urlToken string, title string, id uint) string {
+	newToken := false
+	if urlToken == "" {
+		urlToken = library.GetPinyin(title, w.Content.UrlTokenType == config.UrlTokenTypeSort)
+		if len(urlToken) > 100 {
+			urlToken = urlToken[:100]
+			idx := strings.LastIndex(urlToken, "-")
+			if idx > 0 {
+				urlToken = urlToken[:idx]
+			}
+		}
+		if id > 0 {
+			// 判断archive
+			tmpTag, err := w.GetTagByUrlToken(urlToken)
+			if err == nil && tmpTag.Id != id {
+				urlToken += "-t" + strconv.FormatInt(int64(id), 10)
+				return urlToken
+			}
+		}
+		newToken = true
+	}
+	if newToken == false {
+		urlToken = strings.ToLower(library.ParseUrlToken(urlToken))
+		// 防止超出长度
+		if len(urlToken) > 150 {
+			urlToken = urlToken[:150]
+			idx := strings.LastIndex(urlToken, "-")
+			if idx > 0 {
+				urlToken = urlToken[:idx]
+			}
+		}
+		index := 0
+		for {
+			tmpToken := urlToken
+			if index > 0 {
+				tmpToken = urlToken + "-" + strconv.FormatInt(int64(index), 10)
+			}
+			// 判断分类
+			_, err := w.GetCategoryByUrlToken(tmpToken)
+			if err == nil {
+				index++
+				continue
+			}
+			// 判断archive
+			tmpTag, err := w.GetTagByUrlToken(tmpToken)
+			if err == nil && tmpTag.Id != id {
+				index++
+				continue
+			}
+			urlToken = tmpToken
+			break
+		}
+	}
+
+	return urlToken
+}
+
+func (w *Website) GetTagFields() []config.CustomField {
+	fieldsValue := w.GetSettingValue(TagFieldsSettingKey)
+	var fields []config.CustomField
+	_ = json.Unmarshal([]byte(fieldsValue), &fields)
+
+	return fields
+}
+
+func (w *Website) SaveTagFields(fields []config.CustomField) error {
+	for _, field := range fields {
+		// 不允许使用已存在的字段
+		tagFields, err := getColumns(w.DB, &model.Tag{})
+		if err == nil {
+			for _, val := range tagFields {
+				if val == field.FieldName {
+					return errors.New(field.FieldName + w.Tr("FieldAlreadyExists"))
+				}
+			}
+		}
+		match, err := regexp.MatchString(`^[a-z][0-9a-z_]+$`, field.FieldName)
+		if err != nil || !match {
+			return errors.New(field.FieldName + w.Tr("IncorrectNaming"))
+		}
+	}
+
+	return w.SaveSettingValue(TagFieldsSettingKey, fields)
+}
