@@ -87,11 +87,6 @@ var invokeRouteOverwriteFields = map[string][]string{
 	// 素材：原 provider/material.go 逐字段无条件赋值、且 `material.Status = 1`
 	// 硬编码（status 根本读不到 req 的值，补齐传 0 也会被覆盖成 1）。
 	// 2026-10-29 已指针化并加开关，本表项移除。
-	//
-	// 城市站：原 provider/place.go 逐字段无条件赋值，实测只传 id+title 改名后
-	// seo_title / keywords / description / template / logo / images / status /
-	// latitude 8 个字段全被清空，且 url_token 被空标题重新生成（旧链接 404）。
-	// 2026-10-29 已指针化并加开关，本表项移除。
 }
 
 // preserveGetParam 登记「GET 兄弟的 id 参数名与 POST 不同」的端点。
@@ -128,10 +123,6 @@ var partialInvokePaths = map[string]bool{
 	normalizeEndpointPath("/plugin/material/detail"): true,
 	// 素材分类：同上（原本 `category.Status = 1` 硬编码，分类永远无法停用）。
 	normalizeEndpointPath("/plugin/material/category/detail"): true,
-	// 城市站：2026-10-29 起 request.PlaceRequest 指针化 + UpdateAll/Partial。
-	// url_token 改成三态（nil=不动 / 空串=按标题重生成 / 非空=用它），
-	// 不再出现「改个状态把 URL 改掉、旧链接 404」。
-	normalizeEndpointPath("/plugin/place/detail"): true,
 }
 
 // preserveOnInvokeRoute 在调用全量覆盖的 POST 端点前，把未传的受保护字段用旧值补齐。
@@ -252,7 +243,7 @@ func invokeRoutes(intentName string, routes map[string]string, renames ...map[st
 				// endpointParams 之后才被换算成端点的 current/pageSize。
 				res.Data = listWithTotal(data, envelope, args)
 			} else if hasData && isListAction(action) && endpointFailure(out) == "" {
-				// 列表端点命中 0 条时回的是 data:null（实测 content_place/list 就是）。
+				// 列表端点命中 0 条时回的是 data:null。
 				// 直接透传 null 会让调用方分不清「没有数据」与「调用出错」，
 				// 形状也不稳定（有时数组、有时 null、有时对象）——同一个工具的
 				// list 动作一会儿给数组一会儿给 null，调用方只能到处试。
@@ -272,27 +263,6 @@ func invokeRoutes(intentName string, routes map[string]string, renames ...map[st
 // domainIntentCatalog 是补齐域的意图清单，由 init 合并进总的 IntentCatalog。
 // action 的归一化 list/detail/save/delete/setting_get/setting_save ...
 var domainIntentCatalog = []*IntentSpec{
-	// ───────────────────────── 内容域 ─────────────────────────
-	{
-		Name: "content_place", Title: "管理城市站", Domain: DomainContent, Risk: RiskWrite,
-		Desc: "城市站（分站）的增删查与配置。action: list/detail/save/delete/setting_get/setting_save。",
-		Params: map[string]ParamSpec{
-			"action": {Type: "string", Desc: "操作", Required: true, Enum: []string{"list", "detail", "save", "delete", "setting_get", "setting_save"}},
-			"id":     {Type: "integer", Desc: "城市站 ID"},
-			"values": {Type: "object", Desc: "城市站内容（save）/配置内容（setting 写操作）。save 时**未传的字段保持原值**，url_token 不传=不改链接、传空串=按标题重新生成"},
-		},
-		Required: []string{"action"},
-		Caps:     []string{"api_invoke"},
-		Compose: invokeRoutes("content_place", map[string]string{
-			"list":         "GET /plugin/place/list",
-			"detail":       "GET /plugin/place/detail",
-			"save":         "POST /plugin/place/detail",
-			"delete":       "POST /plugin/place/delete",
-			"setting_get":  "GET /plugin/place/setting",
-			"setting_save": "POST /plugin/place/setting",
-		}),
-	},
-
 	// ───────────────────────── SEO 域 ─────────────────────────
 	// 合并 seo_sitemap(原 catalog.go) + seo_robots + seo_push 为单一 seo 工具。
 	// sitemap 走 cap(sitemap_rebuild+url_push)，robots/push 走端点；均经 api_invoke 执行。
@@ -934,7 +904,7 @@ var gatedDomainIntents = map[string]string{
 func RecommendedExposed() []string {
 	return []string{
 		// 内容（核心写作链路）
-		"content_article", "content_manage", "content_place",
+		"content_article", "content_manage",
 		// 素材
 		"media",
 		// 结构

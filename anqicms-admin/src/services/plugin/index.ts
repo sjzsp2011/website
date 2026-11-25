@@ -17,7 +17,6 @@ export * from './link';
 export * from './llms';
 export * from './material';
 export * from './multilang';
-export * from './place';
 export * from './push';
 export * from './redirect';
 export * from './replace';

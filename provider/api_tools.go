@@ -456,7 +456,6 @@ var partialUpdateEndpoints = map[string]bool{
 	//     重新生成 url_token —— 城市站旧链接 404，且不可回滚。
 	normalizeAPIPath("/plugin/material/detail"):          true, // request.PluginMaterial
 	normalizeAPIPath("/plugin/material/category/detail"): true, // request.PluginMaterialCategory
-	normalizeAPIPath("/plugin/place/detail"):             true, // request.PlaceRequest
 	// ⚠️ /plugin/coupon/code/detail **不在**这里：request.CouponCodeRequest
 	// 没有 UpdateAll/Partial（券码没有 GET 详情、也就没有全量编辑表单），
 	// SaveCouponCode 本身就是无条件 PATCH 语义，注入 partial 是空转。

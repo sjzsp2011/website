@@ -77,8 +77,7 @@ var domainByPlugin = map[string]Domain{
 	"guestbook": DomainInteraction,
 	"comment":   DomainInteraction,
 	// 内容（plugin 下与文档/分类同族的模块）
-	"tag":   DomainContent,
-	"place": DomainContent,
+	"tag": DomainContent,
 	// 站点结构
 	"link": DomainStructure,
 	// 系统配置

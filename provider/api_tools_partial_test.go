@@ -36,7 +36,6 @@ func TestInjectPartialUpdateCoversKnownEndpoints(t *testing.T) {
 		// url_token —— 旧链接 404 且不可回滚。
 		"/plugin/material/detail",
 		"/plugin/material/category/detail",
-		"/plugin/place/detail",
 	}
 	for _, p := range mustCover {
 		got := injectPartialUpdate("POST", p, map[string]any{"id": 1, "title": "x"})

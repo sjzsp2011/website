@@ -143,12 +143,6 @@ var DefaultMenuGroups = []*MenuGroup{
 				Name:     "图片资源管理",
 				Backend:  "/attachment",
 			},
-			{
-				Path:     "/archive/place",
-				GroupKey: "archive",
-				Name:     "城市分站管理",
-				Backend:  "/plugin/place",
-			},
 		},
 	},
 	{

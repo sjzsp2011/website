@@ -81,34 +81,6 @@ func (ct *PlaceTree) getTreeRecursive(rootId uint, add string, fullParents []mod
 	return places
 }
 
-func (ct *PlaceTree) GetTreeNode(rootId uint, add string) []*model.Place {
-	return ct.getTreeNodeRecursive(rootId, add, []model.ParentCategory{})
-}
-
-func (ct *PlaceTree) getTreeNodeRecursive(rootId uint, add string, fullParents []model.ParentCategory) []*model.Place {
-	var tree []*model.Place
-
-	for _, place := range ct.places {
-		if place.ParentId == rootId {
-			place.Spacer = add
-
-			childFullParents := make([]model.ParentCategory, len(fullParents))
-			copy(childFullParents, fullParents)
-			childFullParents = append(childFullParents, model.ParentCategory{
-				Id:    place.Id,
-				Title: place.Title,
-			})
-			place.Parents = fullParents
-
-			space := add + ct.icons[0]
-			place.Children = ct.getTreeNodeRecursive(place.Id, space, childFullParents)
-			tree = append(tree, place)
-		}
-	}
-
-	return tree
-}
-
 func (ct *PlaceTree) getChildren(rootId uint) []*model.Place {
 	if len(ct.tmp) == 0 {
 		for _, v := range ct.places {

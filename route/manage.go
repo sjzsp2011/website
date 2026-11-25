@@ -553,16 +553,6 @@ func manageRoute(app *iris.Application) {
 				subscriber.Post("/category/delete", manageController.DeleteSubscriberCategory)
 			}
 
-			place := plugin.Party("/place")
-			{
-				place.Get("/setting", manageController.PluginGetPlaceSetting)
-				place.Post("/setting", manageController.PluginSavePlaceSetting)
-				place.Get("/list", manageController.PluginPlaceList)
-				place.Get("/detail", manageController.PlaceDetail)
-				place.Post("/detail", manageController.PlaceDetailForm)
-				place.Post("/delete", manageController.PlaceDelete)
-			}
-
 		}
 	}
 }

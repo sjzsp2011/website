@@ -21,7 +21,6 @@ export default {
   'menu.archive.page': 'Pages',
   'menu.archive.module': 'Content models',
   'menu.archive.attachment': 'Media library',
-  'menu.archive.place': 'Cities',
   'menu.plugin': 'Plugins',
   'menu.plugin.index': 'Plugin list',
   'menu.plugin.seo': 'SEO / GEO',

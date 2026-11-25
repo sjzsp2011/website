@@ -21,7 +21,6 @@ export default {
   'menu.archive.page': '单页面管理',
   'menu.archive.module': '内容模型',
   'menu.archive.attachment': '图片资源管理',
-  'menu.archive.place': '城市管理',
   'menu.plugin': '功能',
   'menu.plugin.index': '功能列表',
   'menu.plugin.seo': 'SEO/GEO',

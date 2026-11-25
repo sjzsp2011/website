@@ -2,12 +2,7 @@
 
 package anqicms
 
-import (
-	"embed"
-)
+import _ "embed"
 
 //go:embed icon.ico
 var AppIcon []byte
-
-//go:embed system
-var SystemFiles embed.FS

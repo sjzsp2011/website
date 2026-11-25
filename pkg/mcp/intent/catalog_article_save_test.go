@@ -576,10 +576,8 @@ func TestOverwriteTableOnlyDataEndpoints(t *testing.T) {
 	byPartial := []string{
 		"/system/api/plugin/material/detail",          // provider/material.go SaveMaterial 同上
 		"/system/api/plugin/material/category/detail", // provider/material.go SaveMaterialCategory 同上
-		"/system/api/plugin/place/detail",             // provider/place.go SavePlace 同上
 	}
-	// 2026-10-29 起为空：最后两个「逐字段无条件赋值」端点（material / place）
-	// 已指针化并迁到 partialInvokePaths。表本身保留——将来新增同类端点仍要登记。
+	// 素材端点已指针化并迁到 partialInvokePaths。
 	byFill := []string{}
 	for _, p := range byFill {
 		if _, ok := invokeRouteOverwriteFields[p]; !ok {
@@ -619,51 +617,6 @@ func TestOverwriteTableOnlyDataEndpoints(t *testing.T) {
 	}
 }
 
-// TestInvokeRoutesPlaceSaveSkipsFill content_place 的 save 走 invokeRoutes，
-// 打到 PlaceDetailForm → provider.SavePlace。
-//
-// 2026-10-29 起该端点已是 PATCH 语义（request.PlaceRequest 指针化 +
-// UpdateAll/Partial），意图层不该再回查补齐——补齐是**兜底**，回查失败
-// （记录被删、读接口变更）就退回全量覆盖：seo_title / keywords / description /
-// content / sort / latitude / longitude / timezone / logo / status 一并清零，
-// 而 url_token 还会用空标题重新生成 —— 城市站旧链接直接 404，不可回滚。
-func TestInvokeRoutesPlaceSaveSkipsFill(t *testing.T) {
-	spec := mustSpec(t, "content_place")
-	var sent map[string]any
-	inv := func(_ context.Context, _ string, m map[string]any) (string, error) {
-		if fmt.Sprint(m["method"]) == "GET" {
-			t.Errorf("城市站保存已是 PATCH 语义，不该再发生 GET 回查（补齐失败会退回全量覆盖）")
-			return `{"ok":true,"code":0,"data":{"code":0,"data":{}}}`, nil
-		}
-		p, _ := m["params"].(map[string]any)
-		if p == nil {
-			p = m
-		}
-		sent = p
-		return `{"ok":true,"code":0,"data":{"code":0,"data":{"id":1}}}`, nil
-	}
-	if _, err := spec.Compose(context.Background(), map[string]any{
-		"action": "save", "id": 1, "title": "改名",
-	}, inv); err != nil {
-		t.Fatalf("不应报错：%v", err)
-	}
-	if sent == nil {
-		t.Fatal("未捕获到写请求")
-	}
-	if fmt.Sprint(sent["title"]) != "改名" {
-		t.Errorf("显式传的 title 应保留，实际=%#v", sent["title"])
-	}
-	// 未传的字段一律不出现，由端点自己保持原值（这正是 PATCH 语义的意义）。
-	for _, f := range []string{
-		"seo_title", "keywords", "description", "content", "sort", "template",
-		"logo", "images", "latitude", "longitude", "timezone", "status", "url_token",
-	} {
-		if v, ok := sent[f]; ok {
-			t.Errorf("未传的 %s 不该出现在请求里（端点会保持原值），实际=%#v", f, v)
-		}
-	}
-}
-
 // TestPreserveOnInvokeRouteNeedsExistingRecord 补齐依赖「能按 id 查到旧记录」，
 // 查不到时**不能凭空造值**。
 //
@@ -671,15 +624,19 @@ func TestInvokeRoutesPlaceSaveSkipsFill(t *testing.T) {
 // 登记一条来验证机制本身仍然可用：将来新增「逐字段无条件赋值」的保存端点，
 // 靠的就是它兜底。
 func TestPreserveOnInvokeRouteNeedsExistingRecord(t *testing.T) {
-	const path = "/system/api/plugin/place/detail"
-	invokeRouteOverwriteFields[path] = []string{"seo_title", "logo", "status"}
+	const path = "/system/api/plugin/material/detail"
+	partial := partialInvokePaths[path]
+	delete(partialInvokePaths, path)
+	t.Cleanup(func() { partialInvokePaths[path] = partial })
+	invokeRouteOverwriteFields[path] = []string{"content", "category_id", "status"}
 	defer delete(invokeRouteOverwriteFields, path)
 
-	spec := mustSpec(t, "content_place")
+	spec := mustSpec(t, "contentops_material")
+	var readAttempted bool
 	var wrote map[string]any
 	inv := func(_ context.Context, _ string, m map[string]any) (string, error) {
 		if fmt.Sprint(m["method"]) == "GET" {
-			// 模拟 record not found
+			readAttempted = true
 			return `{"ok":false,"code":-1,"msg":"record not found","data":null}`, nil
 		}
 		p, _ := m["params"].(map[string]any)
@@ -698,11 +655,14 @@ func TestPreserveOnInvokeRouteNeedsExistingRecord(t *testing.T) {
 	if res == nil {
 		t.Fatal("应返回结果对象")
 	}
+	if !readAttempted {
+		t.Fatal("应尝试读取旧记录")
+	}
 	// 写请求照发（否则调用方会以为失败了），但**不能带补齐来的字段**
 	if wrote == nil {
 		t.Fatal("仍应把写请求发给端点")
 	}
-	for _, f := range []string{"seo_title", "logo", "status"} {
+	for _, f := range []string{"content", "category_id", "status"} {
 		if _, filled := wrote[f]; filled {
 			t.Errorf("查不到旧记录时 %s 不该被凭空填入（无旧值可依据）", f)
 		}

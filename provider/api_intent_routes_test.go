@@ -563,7 +563,7 @@ func TestDomainIntentDefaultExposure(t *testing.T) {
 	// 2026-10-07：contentops_material / contentops_translate / commerce / commerce_order
 	// 移入 mustStayGated；skill 原本就在 mustStayGated（理由不成立），现改列入本名单。
 	dailyOpen := []string{
-		"content_article", "content_manage", "content_place", "media", "structure",
+		"content_article", "content_manage", "media", "structure",
 		"seo", "seo_keyword", "seo_anchor", "seo_jsonld", "seo_llms", "traffic_statistics",
 		"interaction", "system_config", "siteops_maintain",
 		"account", "design_manage", "agent", "web", "skill",

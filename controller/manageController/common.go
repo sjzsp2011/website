@@ -185,6 +185,14 @@ func CheckVersion(ctx iris.Context) {
 //   - 请求体 "trial": 是否升级为试用版本。
 //   - 请求体 "trial_version": 试用版本号，trial 为 true 时使用。
 func VersionUpgrade(ctx iris.Context) {
+	if _, err := os.Stat(filepath.Join(config.ExecPath, "go.mod")); err == nil {
+		ctx.JSON(iris.Map{
+			"code": config.StatusFailed,
+			"msg":  ctx.Tr("SourceCheckoutUpgradeDisabled"),
+		})
+		return
+	}
+
 	currentSite := provider.CurrentSite(ctx)
 	var lastVersion request.VersionData
 	if err := ctx.ReadJSON(&lastVersion); err != nil {

@@ -199,15 +199,9 @@ func TestDomainIntentExposureIsDeliberate(t *testing.T) {
 	t.Logf("补齐域意图 %d 个：默认开放 %d，需显式开启 %d", len(domainIntentCatalog), open, gated)
 }
 
-// minOpenDomainIntents 是补齐域默认开放意图数的下限，低于它就判为「整体关回去」。
-//
-// 下限从 10 下调到 8（2026-10-07）：站点未发行交易域，commerce / commerce_order
-// 与 contentops_material / contentops_translate 一并转入默认关闭，
-// 补齐域开放数由 12 降到 8。**这不是放宽护栏**，恰恰相反——
-// 单纯下调下限会让「继续往下降」变得无声，所以下面配了
-// TestDefaultOpenSurfaceStaysSmall 按 token 量级设了一道更紧的护栏，
-// 把「默认可见面过大」和「过小」两个方向同时看住。
-const minOpenDomainIntents = 8
+// minOpenDomainIntents 是补齐域默认开放意图数的下限。
+// 移除城市管理后，仍有 7 个补齐域意图默认开放。
+const minOpenDomainIntents = 7
 
 // TestDefaultOpenSurfaceStaysSmall 给默认可见面加一道**规模**护栏。
 //
@@ -319,7 +313,7 @@ func TestRecommendedExposedDoesNotNarrowDefaults(t *testing.T) {
 // 「站点不配任何白名单时也必须能用的能力」，而这四个都属误操作后果超出
 // 「改回来」范围的类别——素材池/译文批量改写、会员与订单写操作。
 var defaultOpenDomainIntents = []string{
-	"content_place", "seo", "seo_jsonld", "seo_llms", "interaction",
+	"seo", "seo_jsonld", "seo_llms", "interaction",
 	"siteops_maintain", "account", "design_manage",
 }
 

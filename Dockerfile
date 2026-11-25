@@ -6,8 +6,6 @@ RUN apk add build-base
 
 WORKDIR /build
 COPY . ./
-# 如果 system 目录不存在或为空（.gitignore 排除），创建占位文件以通过 go:embed
-RUN if [ ! -d system ] || [ -z "$(ls -A system 2>/dev/null)" ]; then mkdir -p system && echo "placeholder" > system/placeholder.txt; fi
 RUN go env -w GO111MODULE=on && go env -w GOPROXY=https://goproxy.cn,direct
 RUN go mod tidy
 RUN go mod vendor
