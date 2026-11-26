@@ -1,0 +1,42 @@
+{% system siteLogo with name='SiteLogo' %}
+{% contact hotline with name='Cellphone' %}
+<a class="gulf-skip" href="{{ gulfContentAnchor|default:'#home-content' }}">跳转到主要内容</a>
+<header class="gulf-header">
+    <div class="gulf-width gulf-header-inner">
+        <a class="gulf-brand" href="/">
+            {% if siteLogo %}<img src="{{ siteLogo }}" width="52" height="52" alt="">{% endif %}
+            {# 页头只显示当前语种的站点名（SiteName 在英文版里由 AI 翻译）；固定的「英文公司名」只在页脚展示 #}
+            <span>
+                <strong>{{ website.System.SiteName }}</strong>
+            </span>
+        </a>
+        <nav class="gulf-main-nav" aria-label="主导航">
+            {% navList mainLinks with typeId=1 %}
+            <ul>
+                {% for item in mainLinks %}
+                {% if item.Status == 1 %}<li><a href="{{ item.Link }}"{% if item.IsCurrent %} aria-current="page"{% endif %}>{{ item.Title }}</a></li>{% endif %}
+                {% endfor %}
+            </ul>
+            {% endnavList %}
+        </nav>
+        <div class="gulf-header-side">
+            {% if hotline %}
+            <a class="gulf-hotline" href="tel:{{ hotline }}">
+                <span>咨询热线</span>
+                <strong>{{ hotline }}</strong>
+            </a>
+            {% endif %}
+            {#- 语种列表来自后台「多语种」设置；外层 div 的 class 必须恰好是 languages，AI 翻译会据此跳过这一块 -#}
+            {%- languages languages %}
+            {%- for item in languages %}
+            {%- if forloop.First %}<div class="languages">
+            <select class="gulf-lang-select" aria-label="Language" onchange="if(this.value){location.href=this.value}">{% endif %}
+                <option value="{{ item.Link }}"{% if item.IsCurrent %} selected{% endif %}>{{ item.LanguageName }}</option>
+            {%- if forloop.Last %}</select>
+            <noscript>{% for link in languages %}<a class="gulf-lang-link" href="{{ link.Link }}" ignore-translate="true">{{ link.LanguageName }}</a>{% endfor %}</noscript>
+        </div>{% endif %}
+            {%- endfor %}
+            {%- endLanguages %}
+        </div>
+    </div>
+</header>

@@ -1,0 +1,31 @@
+{% if item.Type == 'text' or item.Type == 'number' or item.Type == 'textarea' or item.Type == 'select' or item.Type == 'image' or item.Type == 'file' %}
+<div class="guestbook-field{% if guestbookInquiry and (item.FieldName == 'user_name' or item.FieldName == 'contact') %} guestbook-field-half{% endif %}">
+    <label for="guestbook-field-{{ item.FieldName }}">{% if guestbookInquiry and item.FieldName == 'user_name' %}您的姓名{% else %}{{ item.Name }}{% endif %}</label>
+    {% if item.Type == 'textarea' %}
+    <textarea id="guestbook-field-{{ item.FieldName }}" name="{{ item.FieldName }}" rows="4"{% if item.Required %} required{% endif %}
+        {% if item.Content %}placeholder="{{ item.Content }}"{% elif guestbookInquiry and item.FieldName == 'content' %}placeholder="请简要描述您的需求…"{% endif %}></textarea>
+    {% elif item.Type == 'select' %}
+    <select id="guestbook-field-{{ item.FieldName }}" name="{{ item.FieldName }}"{% if item.Required %} required{% endif %}>
+        {% for choice in item.Items %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}
+    </select>
+    {% elif item.Type == 'image' or item.Type == 'file' %}
+    <input id="guestbook-field-{{ item.FieldName }}" type="file" name="{{ item.FieldName }}"{% if item.Type == 'image' %} accept="image/*"{% endif %}{% if item.Required %} required{% endif %}>
+    {% else %}
+    <input id="guestbook-field-{{ item.FieldName }}" name="{{ item.FieldName }}"
+        type="{% if item.Type == 'text' and item.FieldName == 'contact' %}tel{% else %}{{ item.Type }}{% endif %}"
+        {% if item.Required %}required{% endif %}
+        {% if item.FieldName == 'user_name' %}autocomplete="name"{% elif item.FieldName == 'contact' %}autocomplete="tel"{% elif item.FieldName == 'email' %}autocomplete="email"{% endif %}
+        {% if item.Content %}placeholder="{{ item.Content }}"
+        {% elif guestbookInquiry and item.FieldName == 'user_name' %}placeholder="请输入姓名"
+        {% elif guestbookInquiry and item.FieldName == 'contact' %}placeholder="请输入电话"
+        {% elif guestbookInquiry and item.FieldName == 'subject' %}placeholder="如：供应链合作 / 设备采购 / 地产咨询"{% endif %}>
+    {% endif %}
+</div>
+{% elif item.Type == 'radio' or item.Type == 'checkbox' %}
+<fieldset class="guestbook-field guestbook-choices">
+    <legend>{{ item.Name }}</legend>
+    {% for choice in item.Items %}
+    <label><input type="{{ item.Type }}" name="{{ item.FieldName }}{% if item.Type == 'checkbox' %}[]{% endif %}" value="{{ choice }}"{% if item.Type == 'radio' and item.Required %} required{% endif %}> {{ choice }}</label>
+    {% endfor %}
+</fieldset>
+{% endif %}

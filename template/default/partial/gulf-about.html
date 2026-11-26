@@ -1,0 +1,40 @@
+{% pageDetail introduction with name='Content' %}
+{% pageDetail panorama with name='Logo' %}
+<main id="about-content" class="gulf-page gulf-about">
+    {% include 'partial/gulf-page-hero.html' %}
+
+    <div class="gulf-width gulf-about-body">
+        <section class="gulf-about-intro" aria-label="公司简介">
+            <div class="gulf-about-copy">{{ introduction|safe }}</div>
+            {% if panorama %}
+            <img class="gulf-about-panorama" src="{{ panorama }}" alt="城市天际线全景，远处的高楼与近处的绿色树冠相映" width="1912" height="751">
+            {% endif %}
+        </section>
+
+        {% if page.Extra.brand_intro or page.Extra.industry_intro or page.Extra.vision_intro %}
+        <section class="gulf-about-values" aria-label="企业理念">
+            {% if page.Extra.brand_intro %}
+            <article class="gulf-about-card">
+                <p class="gulf-eyebrow" lang="en">BLUE GULF BRAND</p>
+                <h2>蔚蓝海湾 · 品牌</h2>
+                <p>{{ page.Extra.brand_intro }}</p>
+            </article>
+            {% endif %}
+            {% if page.Extra.industry_intro %}
+            <article class="gulf-about-card">
+                <p class="gulf-eyebrow" lang="en">VAST FIELD INDUSTRY</p>
+                <h2>辽阔领域 · 产业</h2>
+                <p>{{ page.Extra.industry_intro }}</p>
+            </article>
+            {% endif %}
+            {% if page.Extra.vision_intro %}
+            <article class="gulf-about-card">
+                <p class="gulf-eyebrow" lang="en">AMBITIOUS VISION DEVELOPMENT</p>
+                <h2>浩瀚愿景 · 发展</h2>
+                <p>{{ page.Extra.vision_intro }}</p>
+            </article>
+            {% endif %}
+        </section>
+        {% endif %}
+    </div>
+</main>

@@ -1,0 +1,46 @@
+.gulf-honors {
+    padding-top: 0;
+    color: #142e46;
+}
+
+/* 横幅沿用 gulf-page.css 的统一内页横幅（gulf-page-hero），不单独设样式。 */
+
+.gulf-honors-jumps { border-bottom: 1px solid var(--gulf-border); }
+.gulf-honors-jumps .gulf-width { display: flex; flex-wrap: wrap; gap: 0 42px; }
+.gulf-honors-jumps a { padding-block: 19px; color: var(--gulf-ink); font-weight: 700; text-decoration: none; border-bottom: 2px solid transparent; }
+.gulf-honors-jumps a:is(:hover, :focus-visible) { border-color: var(--gulf-gold); }
+.gulf-honors-jumps span { margin-inline-start: 9px; color: #94651f; }
+
+.gulf-honors-section { padding-block: 57px 64px; scroll-margin-top: 16px; }
+.gulf-honors-section h2 { display: flex; align-items: center; gap: 18px; margin-bottom: 25px; font-size: clamp(24px, 2.5vw, 36px); line-height: 1.35; }
+.gulf-honors-section h2::before { width: 23px; flex-shrink: 0; display: block; height: 3px; background: var(--gulf-gold); content: ""; }
+.gulf-honors-appointments, .gulf-honors-award-list { columns: 2; column-gap: 42px; margin: 0; padding: 0; border-top: 1px solid #abc4d9; }
+.gulf-honors-appointments > div, .gulf-honors-award-list > li { break-inside: avoid; padding: 13px 2px; border-bottom: 1px solid var(--gulf-border); font-size: 15px; line-height: 1.5; }
+.gulf-honors-appointments > div { display: flex; justify-content: space-between; gap: 12px; }
+.gulf-honors-appointments dd { margin: 0; color: #0d527d; font-weight: 700; text-align: right; }
+
+.gulf-honors-awards { background: #eff5f9; border-top: 1px solid #e1edf5; }
+.gulf-honors-award-grid-featured { display: grid; grid-template-columns: minmax(0, 29.3fr) minmax(0, 67.1fr); gap: 4%; }
+.gulf-honors-highlight { display: grid; align-content: center; min-height: 230px; padding: 24px clamp(18px, 2vw, 30px); border-left: 3px solid var(--gulf-gold); background: #0d3251; color: #fff; }
+.gulf-honors-highlight p { color: #f0c987; font-weight: 700; }
+.gulf-honors-highlight strong { font-size: clamp(48px, 5.5vw, 78px); line-height: 1; }
+.gulf-honors-highlight h3 { margin: 19px 0 0; font-size: clamp(18px, 1.7vw, 24px); }
+.gulf-honors-award-list { list-style: none; column-gap: 28px; }
+.gulf-honors-award-list li { position: relative; padding-inline-start: 24px; }
+.gulf-honors-award-list li::before { position: absolute; top: 21px; left: 5px; width: 6px; height: 6px; transform: rotate(45deg); background: #a77935; content: ""; }
+.gulf-honors .gulf-honors-note { margin-top: 20px; color: #4d6376; font-size: 13px; }
+
+@media (max-width: 800px) {
+    .gulf-honors-section { padding-block: 40px; }
+    .gulf-honors-award-grid-featured { grid-template-columns: 1fr; gap: 22px; }
+    .gulf-honors-highlight { min-height: 165px; }
+}
+
+@media (max-width: 570px) {
+    .gulf-honors-jumps .gulf-width { gap: 0 14px; }
+    .gulf-honors-jumps a { padding-block: 14px; font-size: 13px; }
+    .gulf-honors-jumps span { margin-inline-start: 2px; }
+    .gulf-honors-section h2 { gap: 12px; }
+    .gulf-honors-appointments, .gulf-honors-award-list { columns: 1; }
+    .gulf-honors-appointments > div, .gulf-honors-award-list > li { font-size: 14px; }
+}

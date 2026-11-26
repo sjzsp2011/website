@@ -1,0 +1,106 @@
+{% extends 'base.html' %}
+
+{% block title %}<title>{% if webInfo.Title and webInfo.Title != website.System.SiteName %}{% tdk with name='Title' siteName=true %}{% else %}{{ website.System.SiteName }}{% endif %}</title>{% endblock %}
+
+{% block stylesheet %}
+<link rel="stylesheet" href="{% system with name='TemplateUrl' %}css/gulf-home.css">
+{% endblock %}
+
+{% block site_header %}
+{% include 'partial/gulf-header.html' %}
+{% endblock %}
+
+{% block container %}
+{% system brandSlogan with name='中文品牌口号' %}
+{% system brandSloganEnglish with name='英文品牌口号' %}
+{% system visionIntro with name='首页愿景介绍' %}
+{% system visionSlogan with name='首页愿景口号' %}
+{% system founding with name='创始时间' %}
+{% system foundingCaption with name='创始时间说明' %}
+{% system businessCount with name='业务板块' %}
+{% system businessCaption with name='业务板块说明' %}
+{% system regionCount with name='区域覆盖' %}
+{% system regionCaption with name='区域覆盖说明' %}
+{% system reach with name='业务版图' %}
+{% system reachCaption with name='业务版图说明' %}
+{% pageDetail aboutLink with name='Link' token='about' %}
+{% categoryDetail business with token='business' %}
+{% categoryDetail businessEnglish with name='en_title' token='business' %}
+<main id="home-content" class="gulf-home">
+    <section class="gulf-hero" aria-labelledby="gulf-home-title">
+        {% bannerList homeBanners with type='default' %}
+        {% for item in homeBanners %}
+        {% if forloop.First and item.Logo %}<img class="gulf-hero-photo" src="{{ item.Logo }}" alt="" fetchpriority="high">{% endif %}
+        {% endfor %}
+        {% endbannerList %}
+        <div class="gulf-width gulf-hero-content">
+            <div class="gulf-hero-copy">
+                <p class="gulf-hero-mark" lang="en">SINCE 1979 · SHW</p>
+                <h1 id="gulf-home-title">
+                    <span class="gulf-hero-en" lang="en">SHANTOU GULF</span>
+                    <span class="gulf-hero-name">{{ website.System.SiteName }}</span>
+                </h1>
+                {% if brandSlogan %}<p class="gulf-slogan">{{ brandSlogan }}</p>{% endif %}
+                {% if brandSloganEnglish %}<p class="gulf-slogan-en" lang="en">{{ brandSloganEnglish }}</p>{% endif %}
+                <div class="gulf-actions">
+                    {% if aboutLink %}<a class="gulf-button" href="{{ aboutLink }}">了解海湾</a>{% endif %}
+                    {% if business %}<a class="gulf-button gulf-button-outline" href="{{ business.Link }}">业务板块</a>{% endif %}
+                </div>
+            </div>
+        </div>
+        {% if founding or businessCount or regionCount or reach %}
+        <div class="gulf-stats">
+            <ul class="gulf-stats-inner">
+                {% if founding %}<li><strong>{{ founding }}</strong><span>{{ foundingCaption }}</span></li>{% endif %}
+                {% if businessCount %}<li><strong>{{ businessCount }}</strong><span>{{ businessCaption }}</span></li>{% endif %}
+                {% if regionCount %}<li><strong>{{ regionCount }}</strong><span>{{ regionCaption }}</span></li>{% endif %}
+                {% if reach %}<li><strong>{{ reach }}</strong><span>{{ reachCaption }}</span></li>{% endif %}
+            </ul>
+        </div>
+        {% endif %}
+    </section>
+
+    {% if business %}
+    <section class="gulf-business gulf-width" aria-labelledby="gulf-business-title">
+        <div class="gulf-section-heading">
+            {% if businessEnglish %}<p class="gulf-eyebrow" lang="en">{{ businessEnglish }}</p>{% endif %}
+            <h2 id="gulf-business-title">四大业务板块</h2>
+        </div>
+        {% archiveList businessItems with type='list' categoryId=business.Id limit=4 order='sort desc' showExtra=true %}
+        {% if businessItems %}
+        <ul class="gulf-card-grid">
+            {% for item in businessItems %}
+            <li class="gulf-card">
+                <a href="{{ item.Link }}">
+                    {% if item.Logo %}<img class="gulf-card-photo" src="{{ item.Logo }}" alt="" width="283" height="170" loading="lazy">{% endif %}
+                    <div class="gulf-card-copy">
+                        {% if item.Extra.en_title.Value %}<p class="gulf-card-en" lang="en">{{ item.Extra.en_title.Value }}</p>{% endif %}
+                        <h3>{{ item.Title }}</h3>
+                        {% if item.Description %}<p class="gulf-card-description">{{ item.Description }}</p>{% endif %}
+                    </div>
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% endarchiveList %}
+        <a class="gulf-button gulf-all-business" href="{{ business.Link }}">查看全部业务</a>
+    </section>
+    {% endif %}
+
+    <section class="gulf-vision" aria-labelledby="gulf-vision-title">
+        <div class="gulf-width">
+            <p class="gulf-eyebrow" lang="en">AMBITIOUS VISION DEVELOPMENT</p>
+            <h2 id="gulf-vision-title">浩瀚愿景 · 发展</h2>
+            {% if visionIntro %}<p class="gulf-vision-intro">{{ visionIntro }}</p>{% endif %}
+            {% if visionSlogan %}<p class="gulf-vision-slogan">{{ visionSlogan }}</p>{% endif %}
+        </div>
+    </section>
+</main>
+{% endblock %}
+
+{% block site_footer %}
+{% with gulfFooterFlush=true %}{% include 'partial/gulf-footer.html' %}{% endwith %}
+{% endblock %}
+
+{% block scripts %}{% endblock %}

@@ -4,7 +4,7 @@ export default {
   'pages.login.captcha-failure': '取得驗證碼失敗',
   'pages.login.verify-failure': '驗證失敗',
   'pages.login.reset-account-success': '管理員帳號密碼重設成功',
-  'pages.login.anqicms': '安企CMS',
+  'pages.login.title': '官網管理後台',
   'pages.login.welcome': '歡迎使用安企CMS(AnQiCMS)',
   'pages.login.tips': '您將登入網站：',
   'pages.login.account-falure': '帳號或密碼錯誤',

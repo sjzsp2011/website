@@ -5,7 +5,7 @@ export default {
   'pages.login.verify-failure': 'Verification failed',
   'pages.login.reset-account-success':
     'Admin account password reset successfully',
-  'pages.login.anqicms': 'AnQiCMS',
+  'pages.login.title': 'Website Admin',
   'pages.login.welcome': 'Welcome to AnQiCMS',
   'pages.login.tips': 'You are about to log in to:',
   'pages.login.account-falure': 'Incorrect username or password',

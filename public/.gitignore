@@ -2,4 +2,11 @@ robots.txt
 /*.xml
 /*.txt
 /system
-/uploads
+/uploads/*
+!/uploads/202611/
+/uploads/202611/*
+!/uploads/202611/26/
+/uploads/202611/26/*
+!/uploads/202611/26/gulf/
+/uploads/202611/26/gulf/*
+!/uploads/202611/26/gulf/*.webp

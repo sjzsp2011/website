@@ -1,3 +1,4 @@
-*
-!.gitignore
-!default
+/*
+!/.gitignore
+!/default/
+/default/data.db

@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block head %}
+<link rel="stylesheet" href="{% system with name='TemplateUrl' %}css/guestbook-form.css">
+{% endblock %}
+
+{% block container %}
+{% include "partial/crumb.html" %}
+<div class="page">
+    <div class="container">
+        <div class="section page-item">
+            <!-- content -->
+            <div class="page-content">
+                <div class="single-content-title">{% tr 'guestbook' %}</div>
+                <div class="single-arc">
+                    {% include 'partial/guestbook-form.html' %}
+                </div>
+            </div>
+            <!-- content -->
+            <!-- sidebar -->
+            {% include "partial/sidebar.html" %}
+            <!-- sidebar -->
+        </div>
+    </div>
+</div>
+{% endblock %}

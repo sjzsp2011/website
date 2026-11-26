@@ -1,0 +1,55 @@
+{% system siteLogo with name='SiteLogo' %}
+{% system companyEnglish with name='英文公司名' %}
+{% system copyright with name='SiteCopyright' %}
+{% system icp with name='SiteIcp' %}
+{% contact hotline with name='Cellphone' %}
+{% contact officeAddress with name='Address' %}
+{% contact postcode with name='邮编' %}
+{% contact fax with name='传真' %}
+{% categoryDetail overview with name='Description' token='business' %}
+<footer class="gulf-footer{% if gulfFooterCompact %} gulf-footer-compact{% endif %}{% if gulfFooterFlush %} gulf-footer-flush{% endif %}">
+    <div class="gulf-width">
+        <div class="gulf-footer-grid">
+            <div class="gulf-footer-brand">
+                <a href="/">
+                    {% if siteLogo %}<img src="{{ siteLogo }}" width="46" height="46" alt="" loading="lazy">{% endif %}
+                    <strong>{{ website.System.SiteName }}</strong>
+                </a>
+                {% if companyEnglish %}<p class="gulf-brand-en" lang="en">{{ companyEnglish }} · SINCE 1979</p>{% endif %}
+                {% if overview %}<p class="gulf-footer-overview">{{ overview }}</p>{% endif %}
+            </div>
+            <nav aria-labelledby="gulf-quick-nav">
+                <h2 id="gulf-quick-nav">快速导航</h2>
+                {% navList quickLinks with typeId=7 %}
+                <ul>
+                    {% for item in quickLinks %}
+                    {% if item.Status == 1 %}<li><a href="{{ item.Link }}">{{ item.Title }}</a></li>{% endif %}
+                    {% endfor %}
+                </ul>
+                {% endnavList %}
+            </nav>
+            <nav aria-labelledby="gulf-business-nav">
+                <h2 id="gulf-business-nav">业务板块</h2>
+                {% navList businessLinks with typeId=8 %}
+                <ul>
+                    {% for item in businessLinks %}
+                    {% if item.Status == 1 %}<li><a href="{{ item.Link }}">{{ item.Title }}</a></li>{% endif %}
+                    {% endfor %}
+                </ul>
+                {% endnavList %}
+            </nav>
+            <div class="gulf-footer-contact">
+                <h2>联系方式</h2>
+                <address>
+                    <ul>
+                        {% if officeAddress %}<li>地址：{{ officeAddress }}</li>{% endif %}
+                        {% if hotline or postcode %}<li>{% if hotline %}电话：<a href="tel:{{ hotline }}">{{ hotline }}</a>{% endif %}{% if postcode %}<span class="gulf-postcode">邮编：{{ postcode }}</span>{% endif %}</li>{% endif %}
+                        {% if fax %}<li>传真：{{ fax }}</li>{% endif %}
+                    </ul>
+                </address>
+            </div>
+        </div>
+        {% if copyright %}<p class="gulf-copyright">{{ copyright }}</p>{% endif %}
+        {% if icp %}<a class="gulf-icp" ignore-translate href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{{ icp }}</a>{% endif %}
+    </div>
+</footer>

@@ -1,12 +1,12 @@
 import Footer from '@/components/Footer';
 import RightContent from '@/components/RightContent';
-import { LinkOutlined } from '@ant-design/icons';
+import ContentErrorBoundary from '@/components/ContentErrorBoundary';
 import type {
   Settings as LayoutSettings,
   MenuDataItem,
 } from '@ant-design/pro-components';
 import type { RunTimeLayoutConfig, RuntimeConfig } from '@umijs/max';
-import { FormattedMessage, getLocale, history } from '@umijs/max';
+import { getLocale, history } from '@umijs/max';
 import { message } from 'antd';
 import defaultSettings from '../config/defaultSettings';
 import HeaderContent from './components/headerContent';
@@ -80,19 +80,6 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     rightContentRender: () => <RightContent />,
     disableContentMargin: false,
     footerRender: () => <Footer />,
-    links: [
-      <a
-        key="anqicms"
-        href="https://www.anqicms.com/"
-        target="_blank"
-        rel="noreferrer"
-      >
-        <LinkOutlined />
-        <span>
-          <FormattedMessage id="app.links.anqicms" />
-        </span>
-      </a>,
-    ],
     headerContentRender: () => <HeaderContent />,
     menuHeaderRender: undefined,
     menuDataRender: (menuData: MenuDataItem[]) => {
@@ -162,6 +149,12 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       );
     },
     ...initialState?.settings,
+    // 内容区的错误边界换成可自动恢复的版本：某个页面渲染出错后，切换到别的页面会自动清除错误，
+    // 不会像默认实现那样所有菜单/tab 都一直显示同一个错误页（之前只能按 F5 恢复）
+    ErrorBoundary: ContentErrorBoundary as any,
+    // 左上角：显示后台「系统设置 → 网站Logo」里配置的图片（接口返回的是完整地址），未配置时用默认图标
+    logo: initialState?.system?.site_logo || defaultSettings.logo,
+    title: '官网管理后台',
   };
 };
 

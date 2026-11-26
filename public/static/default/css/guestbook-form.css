@@ -1,0 +1,122 @@
+.guestbook-form {
+    display: grid;
+    gap: 19px 18px;
+}
+
+.guestbook-form-inquiry {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.guestbook-field, .guestbook-actions {
+    grid-column: 1 / -1;
+    min-width: 0;
+}
+
+.guestbook-field-half {
+    grid-column: auto;
+}
+
+.guestbook-field > label, .guestbook-field > legend {
+    display: block;
+    margin-bottom: 8px;
+    color: #40566b;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.guestbook-field :is(input:not([type='radio'], [type='checkbox'], [type='hidden']), textarea, select) {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    min-height: 48px;
+    padding: 11px 14px;
+    border: 1px solid #d0e1ef;
+    border-radius: 11px;
+    background: #f6f9fb;
+    color: #172b3f;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.guestbook-field textarea {
+    min-height: 110px;
+    resize: vertical;
+}
+
+.guestbook-field :focus-visible, .guestbook-submit:focus-visible {
+    outline: 2px solid #0b75b4;
+    outline-offset: 2px;
+}
+
+.guestbook-choices {
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.guestbook-choices label {
+    display: inline-flex;
+    margin-inline-end: 14px;
+    align-items: center;
+    gap: 4px;
+}
+
+.guestbook-captcha-row, .guestbook-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.guestbook-captcha-row button {
+    flex: 0 0 auto;
+    min-height: 44px;
+    max-width: 44%;
+    padding: 2px 8px;
+    border: 1px solid #d0e1ef;
+    border-radius: 8px;
+    background: #fff;
+    color: #153c5e;
+    cursor: pointer;
+}
+
+.guestbook-captcha-row img:not([hidden]) {
+    display: block;
+    max-width: 100%;
+}
+
+.guestbook-actions {
+    flex-wrap: wrap;
+    margin-top: 5px;
+}
+
+.guestbook-submit {
+    min-width: 128px;
+    min-height: 49px;
+    padding: 10px 21px;
+    border: 0;
+    border-radius: 999px;
+    background: #c8a057;
+    color: #172b3f;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.guestbook-submit:hover { background: #dfb773; }
+.guestbook-submit:disabled { opacity: .62; cursor: wait; }
+
+.guestbook-feedback {
+    margin: 0;
+    color: #176343;
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.guestbook-feedback[data-error] { color: #a42c26; }
+
+@media (max-width: 480px) {
+    .guestbook-form-inquiry { grid-template-columns: 1fr; }
+    .guestbook-form { gap: 16px; }
+}

@@ -173,4 +173,6 @@ export default {
   'component.placeCascader.placeholder': '请选择省/市/区',
   'component.placeCascader.required': '请选择地区',
   'component.attachment.video-unsupport': '您的浏览器不支持 video 标签。',
+  'component.errorBoundary.title': '页面加载出错',
+  'component.errorBoundary.retry': '重试',
 };

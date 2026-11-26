@@ -187,4 +187,6 @@ export default {
   'component.placeCascader.required': 'Please select a region',
   'component.attachment.video-unsupport':
     'Your browser does not support the video tag.',
+  'component.errorBoundary.title': 'Failed to load this page',
+  'component.errorBoundary.retry': 'Retry',
 };

@@ -1,13 +1,13 @@
-import { FormattedMessage, useIntl, useModel } from '@umijs/max';
+import { useIntl, useModel } from '@umijs/max';
 import { FloatButton } from 'antd';
 import { useState } from 'react';
 import AiChat from '../aiChat';
 import './index.less';
 
+// 底部只保留右下角悬浮按钮（AI 对话、回到顶部）；版权和官网链接已按需求去掉。
 const Footer: React.FC = () => {
   const { initialState } = useModel('@@initialState');
   const [aiChatVisible, setAiChatVisible] = useState<boolean>(false);
-  const currentYear = new Date().getFullYear();
   const intl = useIntl();
 
   const isLogin = initialState?.currentUser?.id > 0;
@@ -17,22 +17,6 @@ const Footer: React.FC = () => {
 
   return (
     <div className="anqi-footer">
-      <span>
-        © {currentYear} <FormattedMessage id="component.footer.copyright" />
-      </span>
-      <div>
-        <a href="https://www.anqicms.com/help" target="_blank" rel="noreferrer">
-          <FormattedMessage id="component.footer.help" />
-        </a>
-        <span>|</span>
-        <a
-          href="https://www.anqicms.com/manual"
-          target="_blank"
-          rel="noreferrer"
-        >
-          <FormattedMessage id="component.footer.template-manual" />
-        </a>
-      </div>
       <FloatButton.Group shape="square" style={{ insetInlineEnd: 10 }}>
         {isLogin && (
           <FloatButton

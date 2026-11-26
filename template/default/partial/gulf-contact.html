@@ -1,0 +1,40 @@
+{% contact officeAddress with name='Address' %}
+{% contact hotline with name='Cellphone' %}
+{% contact fax with name='传真' %}
+{% contact postcode with name='邮编' %}
+<main id="contact-content" class="gulf-page gulf-contact">
+    {% include 'partial/gulf-page-hero.html' %}
+    <div class="gulf-width gulf-contact-body">
+        <div class="gulf-contact-grid">
+            <section class="gulf-contact-details" aria-labelledby="gulf-contact-details">
+                <h2 id="gulf-contact-details">联系方式</h2>
+                <dl>
+                    {% if officeAddress %}
+                    <div class="gulf-contact-detail">
+                        <dt><i class="fa fa-map-marker" aria-hidden="true"></i>公司地址</dt>
+                        <dd>{{ officeAddress }}</dd>
+                    </div>
+                    {% endif %}
+                    {% if hotline %}
+                    <div class="gulf-contact-detail">
+                        <dt><i class="fa fa-phone" aria-hidden="true"></i>咨询电话</dt>
+                        <dd><a href="tel:{{ hotline }}">{{ hotline }}</a></dd>
+                    </div>
+                    {% endif %}
+                    {% if fax or postcode %}
+                    <div class="gulf-contact-detail">
+                        <dt><i class="fa fa-envelope-o" aria-hidden="true"></i>{% if fax %}传真{% endif %}{% if fax and postcode %} / {% endif %}{% if postcode %}邮编{% endif %}</dt>
+                        <dd>{% if fax %}<span>传真：{{ fax }}</span>{% endif %}{% if postcode %}<span>邮编：{{ postcode }}</span>{% endif %}</dd>
+                    </div>
+                    {% endif %}
+                </dl>
+            </section>
+            <section class="gulf-contact-inquiry" aria-labelledby="gulf-contact-inquiry">
+                <h2 id="gulf-contact-inquiry">留言咨询</h2>
+                {% with guestbookInquiry=true %}
+                    {% include 'partial/guestbook-form.html' %}
+                {% endwith %}
+            </section>
+        </div>
+    </div>
+</main>

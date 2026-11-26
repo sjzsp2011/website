@@ -58,6 +58,41 @@ const PluginIndex: React.FC = () => {
     setType(val);
   };
 
+  // 把 /plugin 下的路由整理成卡片列表。
+  // 分组（如 seo、system）取其子路由；叶子路由（如 google、llms，自身就是一个功能页，没有 routes）
+  // 直接作为一张卡片，避免对其取 .routes.map 时报 undefined.map 而导致整个页面崩溃。
+  const pluginCards: any[] = [];
+  for (const item of routes as any[]) {
+    if (item.path !== '/plugin' || !Array.isArray(item.routes)) {
+      continue;
+    }
+    for (const inner of item.routes) {
+      const visible =
+        !inner.hideInMenu &&
+        inner.name &&
+        !inner.unaccessible &&
+        (!type || type === inner.type || type === inner.name);
+      if (!visible) {
+        continue;
+      }
+      const leaves = Array.isArray(inner.routes) ? inner.routes : [inner];
+      for (const leaf of leaves) {
+        if (!leaf.name || leaf.unaccessible) {
+          continue;
+        }
+        const isGroupItself = leaf !== inner;
+        pluginCards.push({
+          key: leaf.path,
+          path: leaf.path,
+          icon: leaf.icon,
+          titleId: isGroupItself
+            ? 'menu.plugin.' + inner.name + '.' + leaf.name
+            : 'menu.plugin.' + inner.name,
+        });
+      }
+    }
+  }
+
   let permissions =
     initialState?.currentUser?.group?.setting?.permissions || [];
   if (
@@ -216,56 +251,23 @@ const PluginIndex: React.FC = () => {
         }
       >
         <Row gutter={[20, 20]}>
-          {routes.map((item: any) => {
-            if (item.path === '/plugin') {
-              return item.routes.map((inner: any) => {
-                if (
-                  !inner.hideInMenu &&
-                  inner.name &&
-                  !inner.unaccessible &&
-                  (!type || type === inner.type)
-                ) {
-                  return inner.routes.map((inner2: any, i: number) => {
-                    if (inner2.name && !inner2.unaccessible) {
-                      return (
-                        <Col key={i} sm={6} xs={12}>
-                          <div
-                            className="plugin-item"
-                            onClick={() => {
-                              jumpToPlugin(inner2);
-                            }}
-                          >
-                            <img
-                              className="avatar"
-                              src={getIcon(inner2.icon)}
-                            />
-                            <div className="info">
-                              <div className="title">
-                                <FormattedMessage
-                                  id={
-                                    'menu.plugin.' +
-                                    inner.name +
-                                    '.' +
-                                    inner2.name
-                                  }
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </Col>
-                      );
-                    } else {
-                      return null;
-                    }
-                  });
-                } else {
-                  return null;
-                }
-              });
-            } else {
-              return null;
-            }
-          })}
+          {pluginCards.map((card) => (
+            <Col key={card.key} sm={6} xs={12}>
+              <div
+                className="plugin-item"
+                onClick={() => {
+                  jumpToPlugin(card);
+                }}
+              >
+                <img className="avatar" src={getIcon(card.icon)} />
+                <div className="info">
+                  <div className="title">
+                    <FormattedMessage id={card.titleId} />
+                  </div>
+                </div>
+              </div>
+            </Col>
+          ))}
         </Row>
       </Card>
     </PageContainer>

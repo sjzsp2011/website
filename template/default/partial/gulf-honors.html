@@ -1,0 +1,68 @@
+{% pageDetail honorsContent with name='Content' %}
+{% with appointmentsHeading='社会职务与行业协会任职' awardsHeading='企业荣誉与认证' featuredAward='连续14年获评广东省重合同守信用企业' %}
+{# 页面上显示的标题；appointmentsHeading / awardsHeading 是拆分后台正文用的标记，须与后台正文里的标题保持一致 #}
+{% with appointmentsTitle='商协翘楚' awardsTitle='企业荣誉' %}
+<main id="honors-content" class="gulf-page gulf-honors">
+    {%- with gulfPageEyebrow='HONORS & QUALIFICATIONS' %}{% include 'partial/gulf-page-hero.html' %}{% endwith %}
+    {% with awardsParts=honorsContent|split:awardsHeading %}
+    {% with appointmentParts=awardsParts.0|split:appointmentsHeading %}
+    {% if awardsParts|length == 2 and appointmentParts|length == 2 %}
+    <nav class="gulf-honors-jumps" aria-label="荣誉资质区块">
+        <div class="gulf-width">
+            <a href="#honor-appointments">{{ appointmentsTitle }} <span aria-hidden="true">↓</span></a>
+            <a href="#honor-awards">{{ awardsTitle }} <span aria-hidden="true">↓</span></a>
+        </div>
+    </nav>
+    <section id="honor-appointments" class="gulf-honors-section gulf-width" aria-labelledby="honor-appointments-title">
+        <h2 id="honor-appointments-title">{{ appointmentsTitle }}</h2>
+        <dl class="gulf-honors-appointments">
+            {% for paragraph in appointmentParts.1|split:'</p>' %}
+                {% with entry=paragraph|striptags|trim %}
+                {% if entry %}
+                    {% if entry|slice:'-9:' == '战略决策委员会成员' %}{% set role='战略决策委员会成员' %}
+                    {% elif entry|slice:'-5:' == '常务副会长' %}{% set role='常务副会长' %}
+                    {% elif entry|slice:'-4:' == '名誉会长' %}{% set role='名誉会长' %}
+                    {% elif entry|slice:'-4:' == '副理事长' %}{% set role='副理事长' %}
+                    {% elif entry|slice:'-3:' == '副会长' %}{% set role='副会长' %}
+                    {% elif entry|slice:'-2:' == '会长' %}{% set role='会长' %}
+                    {% else %}{% set role='' %}{% endif %}
+                    {% if role %}<div><dt>{{ entry|cut:role }}</dt><dd>{{ role }}</dd></div>
+                    {% else %}<div><dt>{{ entry }}</dt><dd></dd></div>{% endif %}
+                {% endif %}
+                {% endwith %}
+            {% endfor %}
+        </dl>
+    </section>
+    {% with hasFeatured=awardsParts.1|contain:featuredAward %}
+    <section id="honor-awards" class="gulf-honors-section gulf-honors-awards" aria-labelledby="honor-awards-title">
+        <div class="gulf-width">
+            <h2 id="honor-awards-title">{{ awardsTitle }}</h2>
+            <div class="gulf-honors-award-grid{% if hasFeatured %} gulf-honors-award-grid-featured{% endif %}">
+                {% if hasFeatured %}
+                <div class="gulf-honors-highlight">
+                    <p>连续 <strong>14</strong> 年获评</p>
+                    <h3>广东省重合同守信用企业</h3>
+                </div>
+                {% endif %}
+                <ul class="gulf-honors-award-list">
+                    {% for paragraph in awardsParts.1|split:'</p>' %}
+                        {% with award=paragraph|striptags|trim %}
+                        {% if award and award != featuredAward %}<li>{{ award }}</li>{% endif %}
+                        {% endwith %}
+                    {% endfor %}
+                </ul>
+            </div>
+            {% with note=appointmentParts.0|striptags|trim %}
+            {% if note %}<p class="gulf-honors-note">{{ note }}</p>{% endif %}
+            {% endwith %}
+        </div>
+    </section>
+    {% endwith %}
+    {% else %}
+    <div class="gulf-honors-section gulf-width">{{ honorsContent|safe }}</div>
+    {% endif %}
+    {% endwith %}
+    {% endwith %}
+    {% endwith %}
+</main>
+{% endwith %}

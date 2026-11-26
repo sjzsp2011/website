@@ -1,0 +1,65 @@
+{% extends 'base.html' %}
+
+{% block stylesheet %}{% if page.UrlToken == 'about' or page.UrlToken == 'contact' or page.UrlToken == 'honors' %}
+    {% system templateUrl with name='TemplateUrl' %}
+    <link rel="stylesheet" href="{{ templateUrl }}css/gulf-home.css">
+    <link rel="stylesheet" href="{{ templateUrl }}css/gulf-page.css">
+    <link rel="stylesheet" href="{{ templateUrl }}css/gulf-{{ page.UrlToken }}.css">
+    {% if page.UrlToken == 'contact' %}
+    <link rel="stylesheet" href="{{ templateUrl }}css/font-awesome.min.css">
+    <link rel="stylesheet" href="{{ templateUrl }}css/guestbook-form.css">
+    {% endif %}
+{% else %}{{ block.Super }}{% endif %}{% endblock %}
+
+{% block site_header %}{% if page.UrlToken == 'about' %}
+    {% with gulfContentAnchor='#about-content' %}
+        {% include 'partial/gulf-header.html' %}
+    {% endwith %}
+{% elif page.UrlToken == 'contact' %}
+    {% with gulfContentAnchor='#contact-content' %}
+        {% include 'partial/gulf-header.html' %}
+    {% endwith %}
+{% elif page.UrlToken == 'honors' %}
+    {% with gulfContentAnchor='#honors-content' %}{% include 'partial/gulf-header.html' %}{% endwith %}
+{% else %}{{ block.Super }}{% endif %}{% endblock %}
+
+{% block site_footer %}{% if page.UrlToken == 'honors' %}
+    {% with gulfFooterFlush=true %}{% include 'partial/gulf-footer.html' %}{% endwith %}
+{% elif page.UrlToken == 'about' or page.UrlToken == 'contact' %}
+    {% include 'partial/gulf-footer.html' %}
+{% else %}{{ block.Super }}{% endif %}{% endblock %}
+
+{% block scripts %}{% if page.UrlToken != 'about' and page.UrlToken != 'contact' and page.UrlToken != 'honors' %}{{ block.Super }}{% endif %}{% endblock %}
+
+{% block container %}
+{% if page.UrlToken == 'about' %}
+{% include 'partial/gulf-about.html' %}
+{% elif page.UrlToken == 'contact' %}
+{% include 'partial/gulf-contact.html' %}
+{% elif page.UrlToken == 'honors' %}
+{% include 'partial/gulf-honors.html' %}
+{% else %}
+{% include "partial/banner.html" %}
+<!-- crumb -->
+{% include "partial/crumb.html" %}
+<!-- crumb -->
+<div class="page">
+    <div class="container">
+        <div class="section page-item">
+            <!-- content -->
+            <div class="page-content">
+                <h1 class="single-content-title">{% pageDetail with name="Title" %}</h1>
+                <div class="single-arc">
+                    {%- pageDetail articleContent with name="Content" %}
+                    {{articleContent|safe}}
+                </div>
+            </div>
+            <!-- content -->
+            <!-- sidebar -->
+            {% include "partial/sidebar.html" %}
+            <!-- sidebar -->
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

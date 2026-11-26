@@ -1,0 +1,12 @@
+<section class="gulf-page-hero" aria-labelledby="gulf-page-title">
+    <div class="gulf-width">
+        {%- with gulfPageEyebrow=gulfPageEyebrow|default:page.Extra.en_title %}
+        {% if gulfPageEyebrow %}<p class="gulf-eyebrow" lang="en">{{ gulfPageEyebrow }}</p>{% endif %}
+        {%- endwith %}
+        <h1 id="gulf-page-title">{{ gulfPageHeading|default:page.Title }}</h1>
+        {% if page.Description %}<p class="gulf-page-description">{{ page.Description }}</p>{% endif %}
+        <nav class="gulf-page-breadcrumb" aria-label="面包屑">
+            <a href="/">首页</a><span aria-hidden="true"> / </span><span aria-current="page">{{ page.Title }}</span>
+        </nav>
+    </div>
+</section>

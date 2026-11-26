@@ -173,4 +173,6 @@ export default {
   'component.placeCascader.placeholder': '請選擇省/市/區',
   'component.placeCascader.required': '請選擇地區',
   'component.attachment.video-unsupport': '您的瀏覽器不支援 video 標籤。',
+  'component.errorBoundary.title': '頁面載入出錯',
+  'component.errorBoundary.retry': '重試',
 };

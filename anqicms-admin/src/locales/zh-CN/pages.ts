@@ -4,7 +4,7 @@ export default {
   'pages.login.captcha-failure': '获取验证码失败',
   'pages.login.verify-failure': '验证失败',
   'pages.login.reset-account-success': '管理员账号密码重置成功',
-  'pages.login.anqicms': '安企CMS',
+  'pages.login.title': '官网管理后台',
   'pages.login.welcome': '欢迎使用安企CMS(AnQiCMS)',
   'pages.login.tips': '您将登录网站：',
   'pages.login.account-falure': '账户或密码错误',

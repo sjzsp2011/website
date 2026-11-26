@@ -1,0 +1,85 @@
+.gulf-about-body {
+    padding-block: 108px 59px;
+}
+
+.gulf-about-intro {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.22fr);
+    align-items: center;
+    gap: clamp(24px, 3.2vw, 46px);
+}
+
+.gulf-about-copy {
+    color: #4c6175;
+    font-size: 16px;
+    line-height: 1.75;
+    overflow-wrap: anywhere;
+}
+
+.gulf-about-copy:only-child {
+    grid-column: 1 / -1;
+    max-width: 72ch;
+}
+
+.gulf-about-copy > p + p {
+    margin-top: 17px;
+}
+
+.gulf-about-copy > p:first-child {
+    color: #172b3e;
+    font-weight: 700;
+}
+
+.gulf-about-panorama {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    object-fit: contain;
+    border-radius: 18px;
+    box-shadow: 0 14px 34px #173d5528;
+}
+
+.gulf-about-values {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 66px;
+}
+
+.gulf-about-card {
+    padding: 18px 20px;
+    border-top: 3px solid #229ad7;
+    border-radius: 13px;
+    background: #e8f3fb;
+    color: #4c6175;
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.gulf-about-card .gulf-eyebrow {
+    color: #08669e;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .075em;
+}
+
+.gulf-about-card h2 {
+    margin-block: 6px 9px;
+    color: var(--gulf-ink);
+    font-size: 16px;
+}
+
+@media (max-width: 800px) {
+    .gulf-about-body { padding-block: 56px 20px; }
+    .gulf-about-intro { grid-template-columns: 1fr; gap: 28px; }
+    .gulf-about-values { margin-top: 38px; }
+}
+
+@media (max-width: 540px) {
+    .gulf-about-body { padding-block: 38px 12px; }
+    .gulf-about-copy { font-size: 15px; }
+    .gulf-about-panorama { border-radius: 12px; }
+    .gulf-about-values { grid-template-columns: 1fr; gap: 12px; margin-top: 30px; }
+    .gulf-about-card { padding: 18px 16px; }
+}

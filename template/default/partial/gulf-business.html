@@ -1,0 +1,49 @@
+{% system businessAssets with name='TemplateUrl' %}
+<main id="business-content" class="gulf-page gulf-business-page">
+    {% with page=category gulfPageHeading='四大业务板块' %}{% include 'partial/gulf-page-hero.html' %}{% endwith %}
+
+    {% archiveList businessItems with type='page' limit=10 order='sort desc' showTag=true %}
+    {% if businessItems %}
+    <nav class="gulf-business-jumps" aria-label="业务区块">
+        <ul class="gulf-width">
+            {% for item in businessItems %}<li><a href="#business-{{ item.Id }}">{{ item.Title }}</a></li>{% endfor %}
+        </ul>
+    </nav>
+
+    <div class="gulf-business-rows">
+        {% for item in businessItems %}
+        <article id="business-{{ item.Id }}" class="gulf-business-panel" aria-labelledby="business-title-{{ item.Id }}">
+            {% if item.UrlToken == 'heating-drying' %}
+            <div class="gulf-business-media"><img src="{{ businessAssets }}images/gulf-business-heating.webp" alt="" loading="lazy" decoding="async"></div>
+            {% elif item.Logo %}
+            <div class="gulf-business-media"><img src="{{ item.Logo }}" alt=""{% if not forloop.First %} loading="lazy"{% endif %} decoding="async"></div>
+            {% endif %}
+            <div class="gulf-business-text">
+                <h2 id="business-title-{{ item.Id }}"><a href="{{ item.Link }}">{{ item.Title }}</a></h2>
+                {% if item.Description %}<p>{{ item.Description }}</p>{% endif %}
+                {% if item.Tags %}
+                <ul class="gulf-business-tags" aria-label="{{ item.Title }}关键词">
+                    {% for tag in item.Tags %}
+                    {% if forloop.Counter <= 3 %}<li><a href="{{ tag.Link }}">{{ tag.Title }}</a></li>{% endif %}
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="gulf-width gulf-business-empty">暂无业务文档。</p>
+    {% endif %}
+    {% endarchiveList %}
+
+    {% pagination pages with show=5 %}
+    <nav class="gulf-width gulf-business-pagination" aria-label="业务列表分页">
+        {% if pages.PrevPage %}<a href="{{ pages.PrevPage.Link }}">上一页</a>{% endif %}
+        {% for item in pages.Pages %}
+        {% if item.IsCurrent %}<span aria-current="page">{{ item.Name }}</span>{% else %}<a href="{{ item.Link }}">{{ item.Name }}</a>{% endif %}
+        {% endfor %}
+        {% if pages.NextPage %}<a href="{{ pages.NextPage.Link }}">下一页</a>{% endif %}
+    </nav>
+    {% endpagination %}
+</main>

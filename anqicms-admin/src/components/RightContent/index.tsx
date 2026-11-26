@@ -1,33 +1,17 @@
-import { anqiRestart, getSiteInfo } from '@/services';
-import { GlobalOutlined, QuestionCircleOutlined } from '@ant-design/icons';
-import {
-  FormattedMessage,
-  SelectLang as UmiSelectLang,
-  useIntl,
-  useModel,
-} from '@umijs/max';
+import { anqiRestart } from '@/services';
+import { FormattedMessage, useIntl, useModel } from '@umijs/max';
 import { Modal, Space, message } from 'antd';
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import HeaderSearch from '../HeaderSearch';
 import Avatar from './AvatarDropdown';
 import './index.less';
 
 export type SiderTheme = 'light' | 'dark';
 
+// 右上角只保留：搜索、头像菜单、重启。站点名链接、帮助图标、后台语言切换已按需求去掉。
 const GlobalHeaderRight: React.FC = () => {
   const { initialState } = useModel('@@initialState');
-  const [siteInfo, setSiteInfo] = useState<any>({});
   const intl = useIntl();
-
-  const initSiteInfo = async () => {
-    getSiteInfo({}).then((res) => {
-      setSiteInfo(res?.data || {});
-    });
-  };
-
-  useEffect(() => {
-    initSiteInfo();
-  }, []);
 
   if (!initialState || !initialState.settings) {
     return null;
@@ -73,25 +57,6 @@ const GlobalHeaderRight: React.FC = () => {
           id: 'component.right-content.search.placeholder',
         })}
       />
-      <a
-        href={siteInfo.base_url}
-        target={'_blank'}
-        className="site-info-item action"
-        rel="noreferrer"
-      >
-        <GlobalOutlined style={{ marginRight: 5 }} />
-        {siteInfo.name || siteInfo.base_url}
-      </a>
-      <span
-        style={{ fontSize: 18 }}
-        className="action"
-        onClick={() => {
-          window.open('https://www.anqicms.com/');
-        }}
-      >
-        <QuestionCircleOutlined />
-      </span>
-      <UmiSelectLang />
       <Avatar menu />
       <div className="restart" onClick={confirmRestart}>
         <FormattedMessage id="component.right-content.restart" />

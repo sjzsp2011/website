@@ -1,0 +1,43 @@
+{% system guestbookAssets with name='TemplateUrl' %}
+<form class="guestbook-form{% if guestbookInquiry %} guestbook-form-inquiry{% endif %}"
+      action="/guestbook.html" method="post" enctype="multipart/form-data"
+      {% if recaptcha_key %}data-recaptcha-key="{{ recaptcha_key }}"{% endif %}>
+    {% guestbook fields %}
+    {% if guestbookInquiry %}
+        {% with inquiryFields='user_name,contact,subject,content'|split:',' %}
+            {% for fieldName in inquiryFields %}
+                {% for item in fields %}
+                    {% if item.FieldName == fieldName %}{% include 'partial/guestbook-field.html' %}{% endif %}
+                {% endfor %}
+            {% endfor %}
+            {% for item in fields %}
+                {% if item.Required and not (item.FieldName in inquiryFields) %}{% include 'partial/guestbook-field.html' %}{% endif %}
+            {% endfor %}
+        {% endwith %}
+    {% else %}
+        {% for item in fields %}{% include 'partial/guestbook-field.html' %}{% endfor %}
+    {% endif %}
+    {% endguestbook %}
+
+    {% if website.Safe.Captcha == 1 %}
+    <div class="guestbook-field" data-guestbook-captcha>
+        <label for="guestbook-captcha-answer">验证码</label>
+        <div class="guestbook-captcha-row">
+            <input type="hidden" name="captcha_id">
+            <input type="text" name="captcha" id="guestbook-captcha-answer" required autocomplete="off" placeholder="请输入验证码">
+            <button type="button" data-guestbook-refresh aria-label="刷新验证码">
+                <img alt="验证码图片" hidden><span>刷新验证码</span>
+            </button>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="guestbook-actions">
+        <button class="guestbook-submit" type="submit">{% if guestbookInquiry %}提交留言{% else %}{% tr 'submit' %}{% endif %}</button>
+        <p class="guestbook-feedback" data-guestbook-feedback role="status" aria-atomic="true"></p>
+    </div>
+</form>
+{% if recaptcha_key %}
+<script src="https://www.google.com/recaptcha/api.js?render={{ recaptcha_key }}" defer></script>
+{% endif %}
+<script src="{{ guestbookAssets }}js/guestbook-form.js" defer></script>

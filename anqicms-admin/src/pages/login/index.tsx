@@ -243,12 +243,9 @@ const Login: React.FC = () => {
           </div>
           <LoginForm
             className="login-form"
-            title={intl.formatMessage({ id: 'pages.login.anqicms' })}
+            title={intl.formatMessage({ id: 'pages.login.title' })}
             subTitle={
               <div>
-                <p>
-                  <FormattedMessage id="pages.login.welcome" />
-                </p>
                 <p>
                   <FormattedMessage id="pages.login.tips" />
                   <a target="_blank" href={siteInfo.base_url} rel="noreferrer">
