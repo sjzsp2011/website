@@ -1,4 +1,3 @@
-import { useVipModal } from '@/components/vipModal';
 import {
   getCategories,
   getModules,
@@ -18,7 +17,6 @@ import { Alert, Card, message } from 'antd';
 import React, { useEffect, useState } from 'react';
 
 const PluginTimeFactor: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [setting, setSetting] = useState<any>({});
   const [fetched, setFetched] = useState<boolean>(false);
   const [modules, setModules] = useState<any[]>([]);
@@ -150,19 +148,6 @@ const PluginTimeFactor: React.FC<any> = () => {
                       setRenewOpen(e.target.value);
                     },
                   }}
-                  disabled={isVip === false}
-                  extra={
-                    !isVip ? (
-                      <div
-                        className="link"
-                        onClick={() => {
-                          checkVip(() => {});
-                        }}
-                      >
-                        <FormattedMessage id="plugin.timefactor.vip-tip" />
-                      </div>
-                    ) : null
-                  }
                 />
                 {renewOpen && (
                   <>
@@ -366,7 +351,6 @@ const PluginTimeFactor: React.FC<any> = () => {
           </div>
         )}
       </Card>
-      <VipModal />
     </PageContainer>
   );
 };

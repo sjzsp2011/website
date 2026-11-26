@@ -27,8 +27,8 @@ type OpenAIResult struct {
 func (w *Website) SelfAiTranslate(content string, toLanguage string) (string, error) {
 	langName := library.GetLanguageCnName(toLanguage) + "(" + library.GetLanguageName(toLanguage) + ")"
 	prompt := "请将下列文字翻译成" + langName + "，请直接返回翻译结果，不要返回任何其他额外的内容：\n" + content
-	if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI {
-		if !w.AiGenerateConfig.ApiValid {
+	if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI || w.AiGenerateConfig.AiEngine == config.AiEngineDeepSeek {
+		if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI && !w.AiGenerateConfig.ApiValid {
 			return "", errors.New(w.Tr("InterfaceUnavailable"))
 		}
 		key := w.GetOpenAIKey()
@@ -71,8 +71,8 @@ func (w *Website) SelfAiPseudoResult(req *AnqiAiRequest) (*AnqiAiRequest, error)
 	if req.Language == config.LanguageEn {
 		prompt = "Please rewrite this title:\n" + req.Title
 	}
-	if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI {
-		if !w.AiGenerateConfig.ApiValid {
+	if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI || w.AiGenerateConfig.AiEngine == config.AiEngineDeepSeek {
+		if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI && !w.AiGenerateConfig.ApiValid {
 			return nil, errors.New(w.Tr("InterfaceUnavailable"))
 		}
 		key := w.GetOpenAIKey()
@@ -82,7 +82,7 @@ func (w *Website) SelfAiPseudoResult(req *AnqiAiRequest) (*AnqiAiRequest, error)
 
 		result, err = w.GetOpenAIResponse(key, prompt)
 		if err != nil {
-			if result.Code == 401 || result.Code == 429 {
+			if result != nil && (result.Code == 401 || result.Code == 429) {
 				w.SetOpenAIKeyInvalid(key)
 			}
 			return nil, err
@@ -134,8 +134,8 @@ func (w *Website) SelfAiPseudoResult(req *AnqiAiRequest) (*AnqiAiRequest, error)
 		if req.Language == config.LanguageEn {
 			prompt = "Please complete the content reconstruction according to the provided content, and keep the paragraph structure:\n" + contentTexts[i]
 		}
-		if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI {
-			if !w.AiGenerateConfig.ApiValid {
+		if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI || w.AiGenerateConfig.AiEngine == config.AiEngineDeepSeek {
+			if w.AiGenerateConfig.AiEngine == config.AiEngineOpenAI && !w.AiGenerateConfig.ApiValid {
 				return nil, errors.New(w.Tr("InterfaceUnavailable"))
 			}
 			key := w.GetOpenAIKey()
@@ -145,7 +145,7 @@ func (w *Website) SelfAiPseudoResult(req *AnqiAiRequest) (*AnqiAiRequest, error)
 
 			result, err = w.GetOpenAIResponse(key, prompt)
 			if err != nil {
-				if result.Code == 401 || result.Code == 429 {
+				if result != nil && (result.Code == 401 || result.Code == 429) {
 					w.SetOpenAIKeyInvalid(key)
 				}
 				return nil, err
@@ -239,7 +239,7 @@ func (w *Website) SelfAiGenerateResult(req *AnqiAiRequest) (*AnqiAiRequest, erro
 		result, err = w.GetOpenAIResponse(key, prompt)
 		library.DebugLog(config.ExecPath+"cache/", "ailog.log", "result: ", prompt)
 		if err != nil {
-			if result.Code == 401 || result.Code == 429 {
+			if result != nil && (result.Code == 401 || result.Code == 429) {
 				w.SetOpenAIKeyInvalid(key)
 			}
 			return nil, err

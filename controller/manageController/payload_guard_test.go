@@ -39,7 +39,6 @@ var payloadGuardHandlers = []string{
 	"PluginRemoveMultiLangSite",
 	"PluginRemoveTranslateHtmlCache",
 	"HandleAiGenerateSettingSave",
-	"AuthAiGenerateImageConfirm",
 	"HandleSaveCollectSetting",
 	"PluginRemoveBlockedIP",
 	"DeleteSubscriberCategory",

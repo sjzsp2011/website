@@ -41,14 +41,6 @@ type FilterItem struct {
 	Total     int64  `json:"total"`
 }
 
-type LastVersion struct {
-	Version          string `json:"version"`           // 版本号
-	Description      string `json:"description"`       // 版本描述
-	TrialVersion     string `json:"trial_version"`     // 试用版本号
-	TrialDescription string `json:"trial_description"` // 试用版本描述
-	Trial            bool   `json:"trial"`             // 是否试用版本。
-}
-
 type ChartData struct {
 	Date  string `json:"date"`
 	Label string `json:"label"`

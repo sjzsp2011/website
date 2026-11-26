@@ -22,7 +22,6 @@
     // 顶栏文字色随站点模式变化，变量在 global.less 中按 body[data-shop-mode] 赋值
     color: var(--admin-header-fg, #252a3d);
     line-height: 1.4;
-    // 商城模式顶级菜单多，顶栏空间紧张时不允许「绑定安企账号」折成两行
     white-space: nowrap;
     cursor: pointer;
     transition: all 0.3s;
@@ -54,17 +53,6 @@
   &:hover {
     color: var(--admin-header-fg-hover, #252a3d);
   }
-}
-.order-control {
-  width: 100%;
-  margin: 20px auto;
-  text-align: center;
-}
-.optional {
-  padding-right: 5px;
-  padding-left: 5px;
-  color: #f40;
-  vertical-align: middle;
 }
 .compare {
   display: flex;
@@ -98,26 +86,6 @@
   color: #999;
   font-size: 14px;
 }
-.account-info {
-  padding: 15px;
-  background-color: #fff;
-  border-radius: 5px;
-}
-.account-info .item {
-  display: flex;
-  padding: 10px 0;
-  border-bottom: 1px solid #eee;
-}
-.account-info .item > label {
-  width: 150px;
-  margin-right: 10px;
-  color: #666;
-  text-align: right;
-}
-.account-info .item > div {
-  flex: 1;
-}
-
 @media only screen and (max-width: 768px) {
   :global(.ant-divider-vertical) {
     vertical-align: unset;

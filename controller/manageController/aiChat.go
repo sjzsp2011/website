@@ -10,7 +10,6 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,58 +117,30 @@ func AiChat(ctx iris.Context) {
 
 	defaultSite := provider.CurrentSite(nil)
 
-	oldCfg := eino.GlobalConfig()
+	aiSetting := defaultSite.LoadAiSetting("")
+	cfg := aiSetting.DefaultConfig()
 	if req.Model != "" {
-		tplIdx, found := strings.CutPrefix(req.Model, "custom:")
-		if found {
-			aiSetting := defaultSite.LoadAiSetting("")
-			idx, _ := strconv.Atoi(tplIdx)
-			if idx >= 0 && idx < len(aiSetting.Configs) {
-				cfg := aiSetting.Configs[idx]
-				if oldCfg == nil || cfg.APIKey != oldCfg.APIKey {
-					// 配置已更新，重新设置AI接口
-					slog.Info("AI client initialized with updated config")
-					if err := eino.SetGlobalConfig(cfg); err != nil {
-						slog.Error("Failed to initialize AI client with provided config", "error", err)
-						sendSSEWarning(writer, "AI配置无效: "+err.Error())
-						return
-					}
-					// 配置成功
-					oldCfg = cfg
-					aiSetting.LastModel = req.Model
-					defaultSite.SaveSettingValue(provider.AiSettingKey, aiSetting)
-				}
-			}
-		} else {
-			// 选择的是官方模型
-			if config.AnqiUser.AuthId > 0 {
-				if req.Model != "anqi-flash" && req.Model != "anqi-pro" {
-					req.Model = "anqi-flash"
-				}
-				if req.Model != oldCfg.Model {
-					// 配置已更新，重新设置AI接口
-					if err := eino.SetOfficialConfig(req.Model); err != nil {
-						slog.Error("Failed to initialize AI client", "error", err)
-					} else {
-						slog.Info("AI client initialized successfully")
-					}
-					aiSetting := defaultSite.LoadAiSetting("")
-					aiSetting.LastModel = req.Model
-					defaultSite.SaveSettingValue(provider.AiSettingKey, aiSetting)
-				}
-			} else {
-				sendSSEWarning(writer, "请先绑定安企账号，后开始使用AI助手")
-			}
+		cfg = aiSetting.SelectedConfig(req.Model)
+		if cfg == nil {
+			sendSSEWarning(writer, "所选模型未配置，请选择已保存的 AI 接口。")
+			return
 		}
 	}
-
-	// 设置AI
-	if oldCfg == nil {
-		// 未检测到有效配置，返回 JSON 模板提示
-		sendSSEWarning(writer, "AI接口尚未配置或配置错误。")
+	if cfg == nil {
+		sendSSEWarning(writer, "请先添加并保存 AI 助手接口配置。")
 		fmt.Fprintf(writer, "event: config\ndata: %s\n\n", "{}")
 		writer.Flush()
 		return
+	}
+	if err := eino.SetGlobalConfig(cfg); err != nil {
+		sendSSEWarning(writer, "AI配置无效: "+err.Error())
+		return
+	}
+	if req.Model != "" && req.Model != aiSetting.LastModel {
+		aiSetting.LastModel = req.Model
+		if err := defaultSite.SaveSettingValue(provider.AiSettingKey, aiSetting); err == nil && defaultSite.Cache != nil {
+			defaultSite.Cache.Set("ai_setting", aiSetting, 86400)
+		}
 	}
 
 	// ── Step 1: 接收与诊断 ──
@@ -1564,6 +1535,7 @@ func SaveAiSettings(ctx iris.Context) {
 
 	// cache new setting
 	defaultSite.Cache.Set("ai_setting", settings, 86400)
+	defaultSite.ApplyAiChatSettings(settings)
 
 	ctx.JSON(iris.Map{
 		"code": config.StatusOK,

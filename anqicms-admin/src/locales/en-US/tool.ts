@@ -1,16 +1,4 @@
 export default {
-  'tool.version': 'Current version',
-  'tool.new-version': 'Latest version',
-  'tool.version.description': 'Release Notes',
-  'tool.upgrade-to-new': 'Upgrade to Latest',
-  'tool.version.tips.before':
-    'Your system is already up to date. If you are not sure, you can visit',
-  'tool.version.tips.after': 'to get the latest version',
-  'tool.confirm-upgrade':
-    'Are you sure you want to upgrade to the latest version?',
-  'tool.upgrading': 'Upgrading, do not refresh the page',
-  'tool.confirm-restart': 'Restart to run the new version',
-  'tool.restarting': 'Restarting',
   'tool.cache.confirm-migrate':
     'Are you sure you want to update the database schema?',
   'tool.cache.temp-cache': 'Temporary Cache',

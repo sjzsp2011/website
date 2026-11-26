@@ -132,17 +132,6 @@ export async function getStatisticLiveView(
   });
 }
 
-export async function getStatisticOrder(
-  params?: any,
-  options?: { [key: string]: any },
-) {
-  return get({
-    url: '/statistic/order',
-    params,
-    options,
-  });
-}
-
 export async function getStatisticProduct(
   params?: any,
   options?: { [key: string]: any },

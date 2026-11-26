@@ -406,12 +406,6 @@ var DefaultMenuGroups = []*MenuGroup{
 				Name:     "开发文档",
 				Backend:  "/design/docs",
 			},
-			{
-				Path:     "/design/market",
-				GroupKey: "design",
-				Name:     "设计市场",
-				Backend:  "/design/market",
-			},
 		},
 	},
 	{
@@ -503,12 +497,6 @@ var DefaultMenuGroups = []*MenuGroup{
 		Key:  "tool",
 		Name: "系统功能",
 		Menus: []*Menu{
-			{
-				Path:     "/tool/upgrade",
-				GroupKey: "tool",
-				Name:     "系统升级",
-				Backend:  "/version/upgrade",
-			},
 			{
 				Path:     "/tool/cache",
 				GroupKey: "tool",

@@ -11,7 +11,6 @@ import { message } from 'antd';
 import defaultSettings from '../config/defaultSettings';
 import HeaderContent from './components/headerContent';
 import { getAdminInfo } from './services/admin';
-import { getAnqiInfo } from './services/anqi';
 import config from './services/config';
 import { getSettingSystem } from './services/setting';
 import {
@@ -30,11 +29,9 @@ export async function getInitialState(): Promise<{
   settings?: Partial<LayoutSettings>;
   currentUser?: any;
   system?: any;
-  anqiUser?: any;
   loading?: boolean;
   fetchUserInfo?: () => Promise<any | undefined>;
   fetchSystemSetting?: () => Promise<any | undefined>;
-  fetchAnqiUser?: () => Promise<any | undefined>;
 }> {
   const fetchUserInfo = async () => {
     try {
@@ -52,15 +49,6 @@ export async function getInitialState(): Promise<{
     }
     return undefined;
   };
-  const fetchAnqiUser = async () => {
-    try {
-      const msg = await getAnqiInfo();
-      return msg.data;
-    } catch (error) {
-      //
-    }
-    return undefined;
-  };
   // 如果是登录页面，不执行
   let pathName = history.location.pathname;
   if (pathName.indexOf('/system') === 0) {
@@ -69,22 +57,18 @@ export async function getInitialState(): Promise<{
   if (pathName !== loginPath) {
     const currentUser = await fetchUserInfo();
     const system = await fetchSystemSetting();
-    const anqiUser = await fetchAnqiUser();
 
     return {
       fetchSystemSetting,
       fetchUserInfo,
-      fetchAnqiUser,
       currentUser,
       settings: defaultSettings as Partial<LayoutSettings>,
       system: system,
-      anqiUser: anqiUser,
     };
   }
   return {
     fetchSystemSetting,
     fetchUserInfo,
-    fetchAnqiUser,
     settings: defaultSettings as Partial<LayoutSettings>,
   };
 }

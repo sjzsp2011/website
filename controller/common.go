@@ -469,70 +469,45 @@ func ReRouteContext(ctx iris.Context) {
 	currentSite := provider.CurrentSite(ctx)
 	mainSite := currentSite.GetMainWebsite()
 	if mainSite.MultiLanguage != nil && mainSite.MultiLanguage.Open {
-		if mainSite.MultiLanguage.SiteType == config.MultiLangSiteTypeSingle {
-			// 解析当前站点的语言
-			var langSite *config.MultiLangSite
-			if mainSite.MultiLanguage.Type == config.MultiLangTypeDomain {
-				curHost := library.GetHost(ctx)
-				if curHost != mainSite.Host {
-					langSite = mainSite.MultiLanguage.GetSiteByBaseUrl(curHost)
-				}
-			} else {
-				var lang string
-				if mainSite.MultiLanguage.Type == config.MultiLangTypeDirectory {
-					uri := strings.TrimPrefix(ctx.Request().RequestURI, "/")
-					uris := strings.SplitN(uri, "/", 2)
-					if len(uris) > 1 {
-						lang = uris[0]
+		if langSite := singleSiteTranslationTarget(ctx, mainSite); langSite != nil {
+			uri := ctx.Request().RequestURI
+			// 先检查前缀
+			if mainSite.MultiLanguage.Type == config.MultiLangTypeDirectory {
+				// 去掉前缀
+				uri = strings.TrimPrefix(uri, "/"+langSite.Language)
+			} else if mainSite.MultiLanguage.Type == config.MultiLangTypeSame {
+				// 去掉 ?lang=xxxx 或 &lang=xxx
+				// ?_pjax=%23pjax-container
+				parsed, err := url.Parse(uri)
+				if err == nil {
+					query := parsed.Query()
+					if query.Has("lang") {
+						// 去掉 lang 参数
+						query.Del("lang")
 					}
-				} else {
-					lang = ctx.GetLocale().Language()
+					if query.Has("_pjax") {
+						// 去掉 _pjax 参数
+						query.Del("_pjax")
+					}
+					parsed.RawQuery = query.Encode()
+					uri = parsed.String()
 				}
-				langSite = mainSite.MultiLanguage.GetSite(lang)
 			}
-
-			// 如果不是主域名的语言，则翻译
-			if langSite != nil && langSite.Language != mainSite.System.Language {
-				uri := ctx.Request().RequestURI
-				// 先检查前缀
-				if mainSite.MultiLanguage.Type == config.MultiLangTypeDirectory {
-					// 去掉前缀
-					uri = strings.TrimPrefix(uri, "/"+langSite.Language)
-				} else if mainSite.MultiLanguage.Type == config.MultiLangTypeSame {
-					// 去掉 ?lang=xxxx 或 &lang=xxx
-					// ?_pjax=%23pjax-container
-					parsed, err := url.Parse(uri)
-					if err == nil {
-						query := parsed.Query()
-						if query.Has("lang") {
-							// 去掉 lang 参数
-							query.Del("lang")
-						}
-						if query.Has("_pjax") {
-							// 去掉 _pjax 参数
-							query.Del("_pjax")
-						}
-						parsed.RawQuery = query.Encode()
-						uri = parsed.String()
-					}
+			// 多语言站点下，static 目录 和 uploads 目录需特殊处理
+			if strings.HasPrefix(uri, "/static/") || strings.HasPrefix(uri, "/uploads/") {
+				// 能走到这里的，就表示这些资源不存在，直接跳过翻译环节，减少资源消耗
+			} else if strings.HasPrefix(uri, "/") {
+				params["Cache-Control"] = ctx.GetHeader("Cache-Control")
+				content, err := mainSite.GetOrSetMultiLangCache(ctx.Request().Context(), uri, langSite.Language, params)
+				if err != nil {
+					// 翻译错误的时候，就设置 no-index
+					// x-robots-tag: noindex, follow
+					ctx.Header("X-Robots-Tag", "noindex, follow")
 				}
-				// 多语言站点下，static 目录 和 uploads 目录需特殊处理
-				if strings.HasPrefix(uri, "/static/") || strings.HasPrefix(uri, "/uploads/") {
-					// 能走到这里的，就表示这些资源不存在，直接跳过翻译环节，减少资源消耗
-				} else if strings.HasPrefix(uri, "/") {
-					params["Cache-Control"] = ctx.GetHeader("Cache-Control")
-					content, err := mainSite.GetOrSetMultiLangCache(uri, langSite.Language, params)
-					if err != nil {
-						log.Println("translate err", err)
-						// 翻译错误的时候，就设置 no-index
-						// x-robots-tag: noindex, follow
-						ctx.Header("X-Robots-Tag", "noindex, follow")
-					}
-					ctx.ContentType(context.ContentHTMLHeaderValue)
-					ctx.Header("Content-Language", langSite.Language)
-					ctx.WriteString(content)
-					return
-				}
+				ctx.ContentType(context.ContentHTMLHeaderValue)
+				ctx.Header("Content-Language", langSite.Language)
+				ctx.WriteString(content)
+				return
 			}
 		}
 		if mainSite.MultiLanguage.Type == config.MultiLangTypeDirectory {
@@ -589,6 +564,40 @@ func ReRouteContext(ctx iris.Context) {
 
 	//如果没有合适的路由，则报错
 	NotFound(ctx)
+}
+
+func singleSiteTranslationTarget(ctx iris.Context, site *provider.Website) *config.MultiLangSite {
+	if site.MultiLanguage.SiteType != config.MultiLangSiteTypeSingle || provider.IsHTMLOriginRequest(ctx.Request()) {
+		return nil
+	}
+	var target *config.MultiLangSite
+	switch site.MultiLanguage.Type {
+	case config.MultiLangTypeDomain:
+		if host := library.GetHost(ctx); host != site.Host {
+			target = site.MultiLanguage.GetSiteByBaseUrl(host)
+		}
+	case config.MultiLangTypeDirectory:
+		if prefix, _, ok := strings.Cut(strings.TrimPrefix(ctx.Request().RequestURI, "/"), "/"); ok {
+			target = site.MultiLanguage.GetSite(prefix)
+		}
+	default:
+		target = site.MultiLanguage.GetSite(ctx.GetLocale().Language())
+	}
+	if target == nil || sameTranslationLanguage(site.System.Language, target.Language) {
+		return nil
+	}
+	return target
+}
+
+func sameTranslationLanguage(source, target string) bool {
+	// Older sites stored simplified Chinese as "zh" instead of "zh-CN".
+	if strings.EqualFold(source, "zh") {
+		source = config.LanguageZh
+	}
+	if strings.EqualFold(target, "zh") {
+		target = config.LanguageZh
+	}
+	return strings.EqualFold(source, target)
 }
 
 func ParseRoute(ctx iris.Context) (map[string]string, bool) {

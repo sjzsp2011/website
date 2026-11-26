@@ -200,9 +200,9 @@ var mergedIntentCatalog = []*IntentSpec{
 	// ───────────────────────── 系统域：4 个配置读写（合并）─────────────────────────
 	{
 		Name: "system_config", Title: "站点配置读写", Domain: DomainSystem, Risk: RiskWrite,
-		Desc: "站点设置的读写收敛：action: setting(按 section 读写 system/content/contact/diy_field/index/safe/rewrite)/site_info/site_version/site_anqi(站点与版本信息)/storage_get/storage_save/storage_upload(存储配置)/template_info/template_reload(模板)。",
+		Desc: "站点设置的读写收敛：action: setting(按 section 读写 system/content/contact/diy_field/index/safe/rewrite)/site_info/site_version(站点与版本信息)/storage_get/storage_save/storage_upload(存储配置)/template_info/template_reload(模板)。",
 		Params: map[string]ParamSpec{
-			"action":    {Type: "string", Desc: "操作", Required: true, Enum: []string{"setting", "site_info", "site_version", "site_anqi", "storage_get", "storage_save", "storage_upload", "template_info", "template_reload"}},
+			"action":    {Type: "string", Desc: "操作", Required: true, Enum: []string{"setting", "site_info", "site_version", "storage_get", "storage_save", "storage_upload", "template_info", "template_reload"}},
 			"section":   {Type: "string", Desc: "设置分区（setting 用）", Enum: []string{"system", "content", "contact", "diy_field", "index", "safe", "rewrite"}},
 			"values":    {Type: "object", Desc: "要更新的字段，只覆盖传入的字段、未传字段保持原值，无需先读再全量回写（setting 写 / storage_save 用）"},
 			"content":   {Type: "string", Desc: "robots 等文本内容（storage_upload 用）"},
@@ -213,7 +213,7 @@ var mergedIntentCatalog = []*IntentSpec{
 		Caps: []string{
 			"setting_system", "setting_system_form", "setting_content", "setting_content_form", "setting_contact", "setting_contact_form",
 			"setting_diy_field", "setting_diy_field_form", "setting_index", "setting_index_form", "setting_safe", "setting_safe_form",
-			"rewrite_get", "rewrite_form", "website_info", "version", "anqi_info", "template_get_info", "template_reload", "api_invoke",
+			"rewrite_get", "rewrite_form", "website_info", "version", "template_get_info", "template_reload", "api_invoke",
 		},
 		Compose: systemConfigCompose,
 	},
@@ -941,8 +941,6 @@ func systemConfigCompose(ctx context.Context, args map[string]any, cap CapInvoke
 		return capResult(callCap(ctx, cap, "website_info", sub))
 	case "site_version":
 		return capResult(callCap(ctx, cap, "version", sub))
-	case "site_anqi":
-		return capResult(callCap(ctx, cap, "anqi_info", sub))
 	case "template_info":
 		return capResult(callCap(ctx, cap, "template_get_info", sub))
 	case "template_reload":
@@ -955,7 +953,7 @@ func systemConfigCompose(ctx context.Context, args map[string]any, cap CapInvoke
 		}[action]
 		return capResult(endpointInvoke(ctx, cap, target, args, nil))
 	default:
-		return nil, fmt.Errorf("不支持的操作: %s（可选: setting/site_info/site_version/site_anqi/storage_get/storage_save/storage_upload/template_info/template_reload）", action)
+		return nil, fmt.Errorf("不支持的操作: %s（可选: setting/site_info/site_version/storage_get/storage_save/storage_upload/template_info/template_reload）", action)
 	}
 }
 

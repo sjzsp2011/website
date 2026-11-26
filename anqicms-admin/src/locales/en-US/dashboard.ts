@@ -29,8 +29,6 @@ export default {
   'dashboard.login-info.last-time': 'Last login',
   'dashboard.web-info': 'Website Information',
   'dashboard.soft-info': 'Software Information',
-  'dashboard.soft-info.click-to-upgrade': 'Click to upgrade the system',
-  'dashboard.soft-info.new-version': 'New version found:',
   'dashboard.soft-info.version': 'Software version:',
   'dashboard.soft-info.trial-version': 'Trial Edition',
   'dashboard.soft-info.memory-usage': 'Memory usage:',

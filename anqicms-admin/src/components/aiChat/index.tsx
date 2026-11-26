@@ -99,7 +99,7 @@ const AiChat: React.FC<AiChatProps> = ({
   const [sessionListOpen, setSessionListOpen] = useState(false);
   const [sessionListLoading, setSessionListLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>(
-    getStore('aiChatModel') || 'deepseek',
+    getStore('aiChatModel') || '',
   );
   const [uploadedFiles, setUploadedFiles] = useState<any[]>([]);
   const [templateModalVisible, setTemplateModalVisible] = useState(false);
@@ -173,6 +173,13 @@ const AiChat: React.FC<AiChatProps> = ({
     }
     setTraceLoading(false);
   };
+
+  useEffect(() => {
+    if (customProviders.some((_, index) => selectedModel === 'custom:' + index)) {
+      return;
+    }
+    setSelectedModel(customProviders.length > 0 ? 'custom:0' : '');
+  }, [customProviders, selectedModel]);
 
   const loadProviders = () => {
     getAiSettings()
@@ -289,7 +296,7 @@ const AiChat: React.FC<AiChatProps> = ({
       const body: any = {
         session_id: sessionId,
         message: messageContent,
-        model: selectedModel,
+        model: selectedModel.startsWith('custom:') ? selectedModel : '',
       };
       // 前端 AI 编辑器：附带 iframe 上下文
       if (iframeUrl) {
@@ -1053,16 +1060,17 @@ const AiChat: React.FC<AiChatProps> = ({
       return;
     }
     const provider = Object.assign({}, editProvider, values);
+    const nextProviders = [...customProviders];
     if (editProviderIndex === -1) {
-      customProviders.push(provider);
+      nextProviders.push(provider);
     } else {
-      customProviders[editProviderIndex] = provider;
+      nextProviders[editProviderIndex] = provider;
     }
 
-    saveAiSettings(customProviders)
+    saveAiSettings(nextProviders)
       .then((res: any) => {
         if (res.code === 0) {
-          if (Array.isArray(res.data)) setCustomProviders(res.data);
+          if (Array.isArray(res.data?.configs)) setCustomProviders(res.data.configs);
           setEditProviderModalVisible(false);
           setEditProvider(null);
           message.success(intl.formatMessage({ id: 'ai.chat.save-success' }));
@@ -1076,8 +1084,8 @@ const AiChat: React.FC<AiChatProps> = ({
   };
 
   const handleDeleteCustomProvider = (index: number) => {
-    customProviders.splice(index, 1);
-    saveAiSettings(customProviders)
+    const nextProviders = customProviders.filter((_, itemIndex) => itemIndex !== index);
+    saveAiSettings(nextProviders)
       .then((res: any) => {
         if (res.code === 0) {
           if (Array.isArray(res.data)) {

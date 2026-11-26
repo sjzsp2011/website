@@ -352,17 +352,6 @@ export async function checkSettingSensitiveWords(
   });
 }
 
-export async function syncSettingSensitiveWords(
-  body: any,
-  options?: { [key: string]: any },
-) {
-  return post({
-    url: '/setting/sensitive/sync',
-    body,
-    options,
-  });
-}
-
 export async function saveSettingDiyFields(
   body: any,
   options?: { [key: string]: any },

@@ -302,6 +302,14 @@ const DesignIndex: React.FC = () => {
         headerTitle={intl.formatMessage({ id: 'design.list' })}
         toolBarRender={() => [
           <Button
+            key="official-market"
+            href="https://www.anqicms.com/design"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <FormattedMessage id="design.market.official" />
+          </Button>,
+          <Button
             key="upload"
             onClick={() => {
               setAddVisible(true);

@@ -1,5 +1,4 @@
 import AttachmentSelect from '@/components/attachment';
-import { useVipModal } from '@/components/vipModal';
 import WebsiteForm from '@/pages/website/components/form';
 import {
   getSubsiteAdminLoginUrl,
@@ -26,7 +25,7 @@ import {
   ProFormText,
   ProTable,
 } from '@ant-design/pro-components';
-import { FormattedMessage, useIntl } from '@umijs/max';
+import { FormattedMessage, Link, useIntl } from '@umijs/max';
 import {
   Avatar,
   Button,
@@ -48,7 +47,6 @@ let running = false;
 let intXhr: any = null;
 
 const PluginMultiLang: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const formRef = React.createRef<ProFormInstance>();
   const actionRef = useRef<ActionType>();
   const [limiterSetting, setLimiterSetting] = useState<any>({});
@@ -59,7 +57,6 @@ const PluginMultiLang: React.FC<any> = () => {
   const [textLogVisible, setTextLogVisible] = useState<boolean>(false);
   const [cacheVisible, setCacheVisible] = useState<boolean>(false);
   const [addNewSiteVisible, setAddNewSiteVisible] = useState<boolean>(false);
-  const [multiSites, setMultiSites] = useState<any[]>([]);
   const [defaultSite, setDefaultSite] = useState<any>({});
   const [langOptions, setLangOptions] = useState<any[]>([]);
   const [siteType, setSiteType] = useState<any>('multi');
@@ -265,15 +262,8 @@ const PluginMultiLang: React.FC<any> = () => {
   };
 
   const handleAddSite = () => {
-    if (multiSites.length > 1) {
-      checkVip(() => {
-        setCurrentSite({});
-        setEditVisible(true);
-      }, intl.formatMessage({ id: 'plugin.multilang.vip-tip' }));
-    } else {
-      setCurrentSite({});
-      setEditVisible(true);
-    }
+    setCurrentSite({});
+    setEditVisible(true);
   };
 
   const columns: ProColumns<any>[] = [
@@ -549,9 +539,14 @@ const PluginMultiLang: React.FC<any> = () => {
                   }),
                 },
               ]}
-              extra={intl.formatMessage({
-                id: 'plugin.multilang.auto_translate.description',
-              })}
+              extra={
+                <Space wrap>
+                  <FormattedMessage id="plugin.multilang.auto_translate.description" />
+                  <Link to="/plugin/system/translate">
+                    <FormattedMessage id="plugin.translate.configure-custom" />
+                  </Link>
+                </Space>
+              }
             />
           </ProForm>
           </div>
@@ -606,7 +601,6 @@ const PluginMultiLang: React.FC<any> = () => {
             tableAlertOptionRender={false}
             request={async (params) => {
               const res = await pluginGetMultiLangSites(params);
-              setMultiSites(res.data || []);
               setDefaultSite(res.data?.[0] || {});
               return res;
             }}
@@ -796,7 +790,6 @@ const PluginMultiLang: React.FC<any> = () => {
           onCancel={() => setTextLogVisible(false)}
         />
       )}
-      <VipModal />
     </PageContainer>
   );
 };

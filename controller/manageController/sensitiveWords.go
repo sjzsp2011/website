@@ -89,24 +89,3 @@ func SettingSensitiveWordsCheck(ctx iris.Context) {
 		"data": matches,
 	})
 }
-
-// SettingSensitiveWordsSync 从安企云服务同步敏感词列表
-func SettingSensitiveWordsSync(ctx iris.Context) {
-	currentSite := provider.CurrentSubSite(ctx)
-
-	err := currentSite.AnqiSyncSensitiveWords()
-	if err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  err.Error(),
-		})
-		return
-	}
-
-	currentSite.DeleteCacheIndex()
-
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  ctx.Tr("ConfigurationUpdated"),
-	})
-}

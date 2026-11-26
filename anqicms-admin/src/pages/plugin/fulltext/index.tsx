@@ -1,5 +1,4 @@
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
 import {
   getModules,
   pluginGetFulltextConfig,
@@ -22,7 +21,6 @@ let running = false;
 let intXhr: any = null;
 
 const PluginFulltext: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [modules, setModules] = useState<any[]>([]);
   const [newKey, setNewKey] = useState<string>('');
   const [isOpen, setIsOpen] = useState<boolean>(false);
@@ -226,19 +224,6 @@ const PluginFulltext: React.FC<any> = () => {
                     setEngine(e.target.value);
                   },
                 }}
-                disabled={isVip === false}
-                extra={
-                  !isVip ? (
-                    <div
-                      className="link"
-                      onClick={() => {
-                        checkVip(() => {});
-                      }}
-                    >
-                      <FormattedMessage id="plugin.fulltext.vip-tip" />
-                    </div>
-                  ) : null
-                }
               />
               {engine !== 'default' && (
                 <>
@@ -357,7 +342,6 @@ const PluginFulltext: React.FC<any> = () => {
           <div className="task-message">{task.msg}</div>
         </Modal>
       )}
-      <VipModal />
     </NewContainer>
   );
 };

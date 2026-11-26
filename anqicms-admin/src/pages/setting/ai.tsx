@@ -1,5 +1,5 @@
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
+import TranslateSettings from '@/pages/plugin/translate/components/TranslateSettings';
 import {
   checkOpenAIApi,
   getAdminList,
@@ -16,7 +16,7 @@ import {
   ProFormSwitch,
   ProFormText,
 } from '@ant-design/pro-components';
-import { FormattedMessage, useIntl, useModel } from '@umijs/max';
+import { FormattedMessage, useIntl, useLocation, useModel } from '@umijs/max';
 import {
   Alert,
   Button,
@@ -53,7 +53,6 @@ export const buildMcpServerName = (siteName?: string): string => {
 
 const SettingAiFrom: React.FC<any> = () => {
   const { initialState } = useModel('@@initialState');
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [fetched, setFetched] = useState<boolean>(false);
   const [writeSetting, setWriteSetting] = useState<any>({});
   const [chatSetting, setChatSetting] = useState<any>([]);
@@ -71,9 +70,12 @@ const SettingAiFrom: React.FC<any> = () => {
   const [aiEngine, setAiEngine] = useState<string>('');
   const [tmpInput, setTmpInput] = useState<any>({});
   const [newKey, setNewKey] = useState<string>('');
-  const [activeTabKey, setActiveTabKey] = useState<string>('mcp');
+  const { search } = useLocation();
+  const initialTab =
+    new URLSearchParams(search).get('tab') === 'write' ? 'write' : 'mcp';
+  const [activeTabKey, setActiveTabKey] = useState<string>(initialTab);
   // 已访问过的 tab 常驻挂载（仅切换显示），避免切换 tab 时表单被卸载丢失未保存输入
-  const [visitedTabs, setVisitedTabs] = useState<string[]>(['mcp']);
+  const [visitedTabs, setVisitedTabs] = useState<string[]>([initialTab]);
   const intl = useIntl();
 
   const getSetting = async () => {
@@ -93,6 +95,11 @@ const SettingAiFrom: React.FC<any> = () => {
     getSetting().then(() => {
       setNewKey(key);
     });
+  };
+
+  const changeSettingsTab = (tabKey: string) => {
+    setActiveTabKey(tabKey);
+    setVisitedTabs((prev) => (prev.includes(tabKey) ? prev : [...prev, tabKey]));
   };
 
   useEffect(() => {
@@ -192,29 +199,27 @@ const SettingAiFrom: React.FC<any> = () => {
   };
 
   const onEditChatSetting = (index: number, item: any) => {
-    checkVip(() => {
-      setEditChatIndex(index);
-      setEditChatSetting(
-        item || {
-          name: '',
-          base_url: '',
-          api_key: '',
-          model: '',
-          enable_reasoning: true,
-          max_tokens: 8192,
-        },
-      );
-      setEditChatOpen(true);
-    });
+    setEditChatIndex(index);
+    setEditChatSetting(
+      item || {
+        name: '',
+        base_url: '',
+        api_key: '',
+        model: '',
+        enable_reasoning: true,
+        max_tokens: 8192,
+      },
+    );
+    setEditChatOpen(true);
   };
 
   const handleDeleteChatSetting = (index: number) => {
-    chatSetting.splice(index, 1);
-    saveSettingAi({ chat: chatSetting })
+    const nextSettings = chatSetting.filter((_, itemIndex) => itemIndex !== index);
+    saveSettingAi({ chat: nextSettings })
       .then((res: any) => {
         if (res.code === 0) {
-          if (Array.isArray(res.data)) {
-            setChatSetting(res.data);
+          if (Array.isArray(res.data.chat)) {
+            setChatSetting(res.data.chat);
           }
           setEditChatSetting(null);
           message.success(
@@ -239,13 +244,14 @@ const SettingAiFrom: React.FC<any> = () => {
       return;
     }
     const provider = Object.assign({}, editChatSetting, values);
+    const nextSettings = [...chatSetting];
     if (editChatIndex === -1) {
-      chatSetting.push(provider);
+      nextSettings.push(provider);
     } else {
-      chatSetting[editChatIndex] = provider;
+      nextSettings[editChatIndex] = provider;
     }
 
-    saveSettingAi({ chat: chatSetting })
+    saveSettingAi({ chat: nextSettings })
       .then((res: any) => {
         if (res.code === 0) {
           if (Array.isArray(res.data.chat)) setChatSetting(res.data.chat);
@@ -418,20 +424,21 @@ const SettingAiFrom: React.FC<any> = () => {
   };
 
   return (
-    <NewContainer onTabChange={(key) => onTabChange(key)}>
+    <NewContainer
+      onTabChange={onTabChange}
+      showSiteTabs={activeTabKey !== 'translate'}
+    >
       <Card
-        key={newKey}
         activeTabKey={activeTabKey}
-        onTabChange={(tabKey) => {
-          setActiveTabKey(tabKey);
-          setVisitedTabs((prev) =>
-            prev.includes(tabKey) ? prev : [...prev, tabKey],
-          );
-        }}
+        onTabChange={changeSettingsTab}
         tabList={[
           {
             key: 'write',
             label: intl.formatMessage({ id: 'setting.tab.ai-writing' }),
+          },
+          {
+            key: 'translate',
+            label: intl.formatMessage({ id: 'setting.tab.ai-translation' }),
           },
           {
             key: 'chat',
@@ -444,20 +451,18 @@ const SettingAiFrom: React.FC<any> = () => {
         ]}
       >
         {fetched && visitedTabs.includes('write') && (
-          <div style={{ display: activeTabKey === 'write' ? 'block' : 'none' }}>
-          <ProForm initialValues={writeSetting} onFinish={onSubmitWrite}>
+          <div
+            key={'write-' + newKey}
+            style={{ display: activeTabKey === 'write' ? 'block' : 'none' }}
+          >
+            <ProForm initialValues={writeSetting} onFinish={onSubmitWrite}>
               <ProFormRadio.Group
                 name="ai_engine"
+                rules={[{ required: true }]}
                 label={intl.formatMessage({
                   id: 'plugin.aigenerate.source',
                 })}
                 options={[
-                  {
-                    label: intl.formatMessage({
-                      id: 'plugin.aigenerate.source.anqicms',
-                    }),
-                    value: '',
-                  },
                   {
                     label: intl.formatMessage({
                       id: 'plugin.aigenerate.source.openai',
@@ -496,18 +501,7 @@ const SettingAiFrom: React.FC<any> = () => {
                     </Tag>
                   </div>
                 }
-                disabled={isVip === false}
               />
-              {!isVip ? (
-                <div
-                  className="link mb-normal"
-                  onClick={() => {
-                    checkVip(() => {});
-                  }}
-                >
-                  <FormattedMessage id="setting.ai.vip-more-ai" />
-                </div>
-              ) : null}
               {(aiEngine === 'openai' || aiEngine === 'deepseek') && (
                 <>
                   <ProFormText
@@ -626,8 +620,20 @@ const SettingAiFrom: React.FC<any> = () => {
             </ProForm>
           </div>
         )}
+        {visitedTabs.includes('translate') && (
+          <div
+            style={{ display: activeTabKey === 'translate' ? 'block' : 'none' }}
+          >
+            <TranslateSettings
+              onOpenWritingSettings={() => changeSettingsTab('write')}
+            />
+          </div>
+        )}
         {fetched && visitedTabs.includes('chat') && (
-          <div style={{ display: activeTabKey === 'chat' ? 'block' : 'none' }}>
+          <div
+            key={'chat-' + newKey}
+            style={{ display: activeTabKey === 'chat' ? 'block' : 'none' }}
+          >
             <div>
               <div style={{ marginBottom: 12 }}>
                 <Button type="primary" size="small" onClick={onAddChatAi}>
@@ -686,7 +692,10 @@ const SettingAiFrom: React.FC<any> = () => {
           </div>
         )}
         {fetched && visitedTabs.includes('mcp') && (
-          <div style={{ display: activeTabKey === 'mcp' ? 'block' : 'none' }}>
+          <div
+            key={'mcp-' + newKey}
+            style={{ display: activeTabKey === 'mcp' ? 'block' : 'none' }}
+          >
           <ProForm
               formRef={mcpFormRef}
               initialValues={{
@@ -1053,7 +1062,6 @@ const SettingAiFrom: React.FC<any> = () => {
           </div>
         )}
       </Card>
-      <VipModal />
       <ModalForm
         title={
           editChatIndex !== -1

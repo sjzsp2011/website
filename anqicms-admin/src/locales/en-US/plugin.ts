@@ -1657,8 +1657,7 @@ export default {
   'plugin.multilang.auto_translate': 'Auto translate',
   'plugin.multilang.auto_translate.false': 'No',
   'plugin.multilang.auto_translate.true': 'Yes',
-  'plugin.multilang.auto_translate.description':
-    'Auto translation is a paid feature. Please check the official website for pricing.',
+  'plugin.multilang.auto_translate.description': 'Automatic translation uses the translation settings for this site.',
   'plugin.multilang.show_main_dir': 'Show the main site directory',
   'plugin.multilang.show_main_dir.description':
     'For example, if the main site language is en, the main site directory is en.',
@@ -1707,12 +1706,17 @@ export default {
   'plugin.translate.lang': 'Translation language',
   'content.translate.origin-content': 'Original text',
   'plugin.translate.result': 'Translation result',
-  'plugin.translate.tips':
-    'The translation interface uses the official interface by default. You can optionally use Baidu Translate or Youdao Translate, which need to be configured separately.',
+  'plugin.translate.tips': 'Choose a translation engine and enter its API settings.',
   'plugin.translate.view-log': 'View translation records',
   'plugin.translate.engine': 'Select translation interface',
   'plugin.translate.engine.anqicms': 'Official interface',
-  'plugin.translate.engine.ai': 'AI LLM',
+  'plugin.translate.configure-custom': 'Configure custom model translation',
+  'plugin.translate.engine.openai': 'Custom model (OpenAI-compatible)',
+  'plugin.translate.openai.base-url': 'API base URL',
+  'plugin.translate.openai.api-key': 'API key',
+  'plugin.translate.openai.api-key.help': 'Saved keys are masked. Re-enter the API key when changing the API base URL.',
+  'plugin.translate.openai.model': 'Model ID',
+  'plugin.translate.engine.ai': 'Use the AI writing model',
   'plugin.translate.engine.baidu': 'Baidu Translate',
   'plugin.translate.engine.youdao': 'Youdao Translate',
   'plugin.translate.engine.baidu.app-id': 'APPID',
@@ -2118,8 +2122,6 @@ export default {
   'plugin.guestbook.push-way.email': 'Email (Default)',
   'plugin.guestbook.push-way.site': 'Site',
   'plugin.guestbook.push-way.api': 'API Endpoint',
-  'plugin.guestbook.vip-tip':
-    'Message push is a VIP feature. Click to view VIP.',
   'plugin.guestbook.email-setting': 'Email Settings',
   'plugin.guestbook.email-tips.before':
     'Guestbook messages are pushed to email by default. Go to ',
@@ -2132,22 +2134,8 @@ export default {
   'plugin.llms.vip-tip':
     'More LLMs settings are a VIP feature. Click to view VIP.',
   'plugin.llms.click-view-vip': 'Click to view VIP',
-  'plugin.htmlcache.vip-tip':
-    'More storage methods are a VIP feature. Click to view VIP.',
-  'plugin.titleimage.vip-tip':
-    'More storage methods are a VIP feature. Click to view VIP.',
-  'plugin.storage.vip-tip':
-    'More storage methods are a VIP feature. Click to view VIP.',
-  'plugin.interference.vip-tip':
-    'More storage methods are a VIP feature. Click to view VIP.',
-  'plugin.timefactor.vip-tip':
-    'Document time factor is a VIP feature. Click to view VIP.',
-  'plugin.fulltext.vip-tip':
-    'More full-text index methods are a VIP feature. Click to view VIP.',
-  'plugin.translate.vip-tip':
-    'More translation engines are a VIP feature. Click to view VIP.',
-  'plugin.translate.ai-config-tips':
-    'Configure the AI interface under [Settings] -> [Unified AI Settings]',
+  'plugin.translate.vip-tip': 'Other translation services require VIP. View VIP options.',
+  'plugin.translate.ai-config-tips': 'Configure the AI writing API',
   'plugin.jsonld.vip-feature': 'More advanced settings are a VIP feature.',
   'plugin.jsonld.vip-tip':
     'More advanced settings are a VIP feature. Click to view VIP.',

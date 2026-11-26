@@ -529,7 +529,6 @@ func TestDomainIntentDefaultExposure(t *testing.T) {
 		"system_multilang":     "跨站点同步与删除",
 		"system_rewrite":       "全站 URL 结构",
 		"siteops_backup":       "数据库破坏性操作",
-		"siteops_upgrade":      "版本升级",
 		"siteops_website":      "多站点增删",
 		"api":                  "通用调用等价 shell",
 		// 2026-10-07：system_plugin 转入（它只剩主机级/不可逆动作，robots 已迁往siteops_maintain）。

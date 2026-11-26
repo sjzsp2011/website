@@ -134,7 +134,6 @@ export default {
   'menu.website': 'Multi-site management',
   'menu.website.website': 'Multi-site management',
   'menu.website.multilang': 'Multilingual sites',
-  'menu.upgrade': 'System upgrade',
   'menu.cache': 'Refresh cache',
   'menu.preview': 'Preview',
   'menu.order': 'Orders',

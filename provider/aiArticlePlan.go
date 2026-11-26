@@ -3,7 +3,6 @@ package provider
 import (
 	"kandaoni.com/anqicms/config"
 	"kandaoni.com/anqicms/model"
-	"log"
 )
 
 func (w *Website) GetAiArticlePlanByReqId(reqId int64) (*model.AiArticlePlan, error) {
@@ -30,7 +29,7 @@ func (w *Website) GetAiArticlePlanById(id uint) (*model.AiArticlePlan, error) {
 
 func (w *Website) GetAiArticlePlanByKeyword(planType int, keyword string) (*model.AiArticlePlan, error) {
 	var plan model.AiArticlePlan
-	err := w.DB.Where("`type` = ? and `keyword` = ?", planType, keyword).Take(&plan).Error
+	err := w.DB.Where("`type` = ? and `keyword` = ? AND (use_self = ? OR status = ?)", planType, keyword, true, config.AiArticleStatusCompleted).Take(&plan).Error
 
 	if err != nil {
 		return nil, err
@@ -69,22 +68,9 @@ func (w *Website) SaveAiArticlePlan(resp *AnqiAiResult, useSelf bool) (*model.Ai
 	return plan, nil
 }
 
-// SyncAiArticlePlan 从服务器中拉取进行中的任务
-func (w *Website) SyncAiArticlePlan() {
-	//if !w.AiGenerateConfig.Open {
-	//	return
-	//}
-	var plans []*model.AiArticlePlan
-	w.DB.Model(&model.AiArticlePlan{}).Where("`status` = ? and `use_self` = 0", config.AiArticleStatusDoing).Find(&plans)
-
-	if len(plans) == 0 {
-		return
-	}
-
-	for _, plan := range plans {
-		err := w.AnqiSyncAiPlanResult(plan)
-		if err != nil {
-			log.Println("plan text", plan.Id, err)
-		}
-	}
+// CancelLegacyAiArticlePlans closes pending jobs from the retired cloud writer.
+func (w *Website) CancelLegacyAiArticlePlans() error {
+	return w.DB.Model(&model.AiArticlePlan{}).
+		Where("status IN ? AND use_self = ?", []int{config.AiArticleStatusWaiting, config.AiArticleStatusDoing}, false).
+		UpdateColumn("status", config.AiArticleStatusCanceled).Error
 }

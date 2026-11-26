@@ -1,5 +1,4 @@
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
 import {
   pluginGetTitleImageConfig,
   pluginSaveTitleImageConfig,
@@ -32,7 +31,6 @@ import React, { useEffect, useState } from 'react';
 import './index.less';
 
 const PluginTitleImage: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const { initialState, setInitialState } = useModel('@@initialState');
   const [setting, setSetting] = useState<any>(null);
   const [fetched, setFetched] = useState<boolean>(false);
@@ -201,18 +199,7 @@ const PluginTitleImage: React.FC<any> = () => {
                   extra={intl.formatMessage({
                     id: 'plugin.titleimage.open.description',
                   })}
-                  disabled={isVip === false}
                 />
-                {!isVip ? (
-                  <div
-                    className="link"
-                    onClick={() => {
-                      checkVip(() => {});
-                    }}
-                  >
-                    <FormattedMessage id="plugin.titleimage.vip-tip" />
-                  </div>
-                ) : null}
                 <div style={{ display: setting.open ? 'block' : 'none' }}>
                   <ProFormRadio.Group
                     name="draw_sub"
@@ -463,7 +450,6 @@ const PluginTitleImage: React.FC<any> = () => {
           <ProFormText name="text" />
         </ModalForm>
       )}
-      <VipModal />
     </NewContainer>
   );
 };

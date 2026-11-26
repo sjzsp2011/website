@@ -155,7 +155,7 @@ func TestExecuteRejectsUnopenedDefaultOff(t *testing.T) {
 // 这份清单会被一键填入配置，混进备份/升级/迁移等于绕过了人工确认环节。
 func TestRecommendedExposedIsConservative(t *testing.T) {
 	forbidden := map[string]bool{
-		"siteops_backup": true, "siteops_upgrade": true, "siteops_website": true,
+		"siteops_backup": true, "siteops_website": true,
 		"contentops_transfer": true, "api_invoke": true, "api": true,
 	}
 	for _, n := range RecommendedExposed() {

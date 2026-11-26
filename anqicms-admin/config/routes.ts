@@ -515,11 +515,6 @@ export default [
         component: '@/pages/design/doc',
       },
       {
-        path: '/design/market',
-        name: 'market',
-        component: '@/pages/design/market',
-      },
-      {
         path: '/design/diyfield',
         name: 'diy',
         component: '@/pages/design/diyfield',
@@ -615,14 +610,6 @@ export default [
         icon: 'multilang',
       },
     ],
-  },
-  {
-    path: '/tool/upgrade',
-    icon: 'CloudSync',
-    name: 'upgrade',
-    access: 'canAdmin',
-    hideInTop: true,
-    component: '@/pages/tool/upgrade',
   },
   {
     path: '/tool/cache',

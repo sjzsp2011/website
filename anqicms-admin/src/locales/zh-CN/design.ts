@@ -23,6 +23,7 @@ export default {
   'design.data.initial': '初始化',
   'design.data.manage': '管理',
   'design.list': '设计模板列表',
+  'design.market.official': '官方模板市场',
   'design.upload': '上传新模板',
   'design.package.zip': '模板压缩包',
   'design.package.zip.select': '选择Zip压缩包',

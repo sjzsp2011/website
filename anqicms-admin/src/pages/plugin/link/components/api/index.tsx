@@ -1,4 +1,3 @@
-import { useVipModal } from '@/components/vipModal';
 import { pluginGetImportApiSetting, pluginUpdateApiToken } from '@/services';
 import { ModalForm, ProCard, ProFormText } from '@ant-design/pro-components';
 import { FormattedMessage, history, useIntl } from '@umijs/max';
@@ -17,7 +16,6 @@ import CopyToClipboard from 'react-copy-to-clipboard';
 import './index.less';
 
 const PluginLinkApi: React.FC<any> = (props) => {
-  const { checkVip, VipModal } = useVipModal();
   const [visible, setVisible] = useState<boolean>(false);
   const [tokenVidible, setTokenVisible] = useState<boolean>(false);
   const [tab, setTab] = useState('1');
@@ -66,12 +64,11 @@ const PluginLinkApi: React.FC<any> = (props) => {
   };
 
   const handleShowApi = () => {
-    checkVip(() => setVisible(true));
+    setVisible(true);
   };
 
   return (
     <>
-      <VipModal />
       <div
         onClick={() => {
           handleShowApi();

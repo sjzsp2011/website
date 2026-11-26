@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -712,14 +714,31 @@ func (w *Website) GetAndCacheHtmlData(urlPath string, isMobile bool) error {
 }
 
 func (w *Website) GetHtmlDataByLocal(urlPath string, lang string, isMobile bool) ([]byte, error) {
+	return w.getHTMLDataByLocal(context.Background(), urlPath, lang, isMobile)
+}
+
+const htmlOriginHeader = "X-Anqicms-Html-Origin"
+
+var htmlOriginToken = rand.Text()
+
+// IsHTMLOriginRequest reports whether this process made the request to render source HTML.
+func IsHTMLOriginRequest(req *http.Request) bool {
+	return subtle.ConstantTimeCompare([]byte(req.Header.Get(htmlOriginHeader)), []byte(htmlOriginToken)) == 1
+}
+
+func (w *Website) getHTMLDataByLocal(ctx context.Context, urlPath, lang string, isMobile bool) ([]byte, error) {
 	if strings.HasPrefix(urlPath, "http") {
 		parsed, err := url.Parse(urlPath)
-		if err == nil {
-			urlPath = parsed.Path
-			if len(parsed.RawQuery) > 0 {
-				urlPath += "?" + parsed.RawQuery
-			}
+		if err != nil {
+			return nil, err
 		}
+		urlPath = parsed.RequestURI()
+	}
+	if urlPath == "" {
+		urlPath = "/"
+	}
+	if !strings.HasPrefix(urlPath, "/") {
+		return nil, errors.New("source HTML path must start with /")
 	}
 	host := w.Host
 	if isMobile && w.System.TemplateType == config.TemplateTypeSeparate {
@@ -735,8 +754,15 @@ func (w *Website) GetHtmlDataByLocal(urlPath string, lang string, isMobile bool)
 	// 10秒超时
 	client := &http.Client{
 		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			origin := via[0].URL
+			if len(via) >= 10 || req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
 	}
-	req, err := http.NewRequest("GET", baseUrl+urlPath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseUrl+urlPath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +770,7 @@ func (w *Website) GetHtmlDataByLocal(urlPath string, lang string, isMobile bool)
 	req.Header.Set("X-Host", host)
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Cache", "true")
-	// 回源渲染使用站点原文语言，避免命中默认 locale 后再次进入翻译。
+	req.Header.Set(htmlOriginHeader, htmlOriginToken)
 	req.Header.Set("Accept-Language", w.System.Language)
 	if lang != "" {
 		req.Header.Set("Language", lang)
@@ -754,8 +780,13 @@ func (w *Website) GetHtmlDataByLocal(urlPath string, lang string, isMobile bool)
 		return nil, err
 	}
 	defer resp.Body.Close()
-	content, _ := io.ReadAll(resp.Body)
-
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return content, fmt.Errorf("source HTML returned HTTP %d", resp.StatusCode)
+	}
 	return content, nil
 }
 

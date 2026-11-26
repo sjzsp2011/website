@@ -3,7 +3,6 @@ import AiGenerate from '@/components/aiGenerate';
 import AiGetTdk from '@/components/aitdk';
 import AttachmentSelect from '@/components/attachment';
 import {
-  anqiExtractDescription,
   getCategories,
   getCategoryInfo,
   getDesignTemplateFiles,
@@ -33,7 +32,6 @@ import {
   Col,
   Image,
   message,
-  Modal,
   Row,
   Space,
   Tag,
@@ -274,47 +272,6 @@ const PageCategoryDetail: React.FC = () => {
     formRef.current?.setFieldsValue(data);
   };
 
-  const handleExtractDescription = () => {
-    if (content.length < 100) {
-      message.error(
-        intl.formatMessage({
-          id: 'content.archive.content.length.error',
-        }),
-      );
-      return false;
-    }
-    Modal.confirm({
-      title: intl.formatMessage({
-        id: 'content.archive.extract.description',
-      }),
-      content: intl.formatMessage({
-        id: 'content.archive.extract.description.content',
-      }),
-      onOk: () => {
-        anqiExtractDescription({
-          text: content,
-        })
-          .then((res) => {
-            if (res.code === 0) {
-              formRef?.current?.setFieldsValue({
-                description: res.data,
-              });
-            } else {
-              message.info(res.msg);
-            }
-          })
-          .catch((err) => {
-            message.error(
-              err.msg ||
-                intl.formatMessage({
-                  id: 'content.submit.failure',
-                }),
-            );
-          });
-      },
-    });
-  };
-
   return (
     <NewContainer
       onTabChange={(key) => onTabChange(key)}
@@ -398,12 +355,6 @@ const PageCategoryDetail: React.FC = () => {
                           onClick={aiTdkGenerate}
                         >
                           <FormattedMessage id="component.aitdk.btn.generate" />
-                        </span>
-                        <span
-                          className="link extract-tag"
-                          onClick={handleExtractDescription}
-                        >
-                          <FormattedMessage id="content.description.extract" />
                         </span>
                       </Space>
                     </div>

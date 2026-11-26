@@ -1,12 +1,11 @@
 import {
   anqiAiGenerateStream,
   anqiAiGenerateStreamData,
-  getAnqiInfo,
   getCollectCombineArticle,
 } from '@/services';
 import { ProForm, ProFormText } from '@ant-design/pro-components';
 import { FormattedMessage, useIntl } from '@umijs/max';
-import { Button, Divider, Modal, Space, Tag, message } from 'antd';
+import { Button, Divider, Modal, Space, message } from 'antd';
 import React, { useEffect, useState } from 'react';
 import './index.less';
 
@@ -21,7 +20,6 @@ export type AiGenerateProps = {
 let xhr: any = null;
 
 const AiGenerate: React.FC<AiGenerateProps> = (props) => {
-  const [anqiUser, setAnqiUser] = useState<any>({});
   const [aiTitle, setAiTitle] = useState<string>('');
   const [aiDemand, setAiDemand] = useState<string>('');
   const [aiContent, setAiContent] = useState<string>('');
@@ -33,10 +31,6 @@ const AiGenerate: React.FC<AiGenerateProps> = (props) => {
   let tmpContent = '';
 
   useEffect(() => {
-    // 获取AIremain
-    getAnqiInfo().then((res) => {
-      setAnqiUser(res.data || {});
-    });
     setAiTitle(props.title || '');
 
     return () => {
@@ -178,36 +172,6 @@ const AiGenerate: React.FC<AiGenerateProps> = (props) => {
       }}
       footer={null}
     >
-      <div className="mb-normal">
-        <div className="extra-text">
-          <Space>
-            <span>
-              <FormattedMessage id="component.right-content.integral" />
-              {anqiUser.integral}
-            </span>
-            <span>
-              <FormattedMessage id="component.right-content.free-token" />
-              {anqiUser.free_token}
-            </span>
-            <span>
-              <FormattedMessage id="component.right-content.total-token" />
-              {anqiUser.total_token}
-            </span>
-            <span>
-              <FormattedMessage id="component.right-content.un-pay-token" />
-              {anqiUser.un_pay_token}
-            </span>
-            {anqiUser.is_owe_fee === 1 && (
-              <Tag color="red">
-                <FormattedMessage id="component.right-content.is-owe-fee" />
-              </Tag>
-            )}
-          </Space>
-          <div>
-            <FormattedMessage id="component.right-content.total-token.description" />
-          </div>
-        </div>
-      </div>
       <ProForm layout="horizontal" submitter={false}>
         <ProFormText
           label={intl.formatMessage({ id: 'component.aigenerate.title' })}

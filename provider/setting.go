@@ -55,7 +55,6 @@ const (
 	TitleImageSettingKey     = "title_image"
 	WatermarkSettingKey      = "watermark"
 	HtmlCacheSettingKey      = "html_cache"
-	AnqiSettingKey           = "anqi"
 	AiGenerateSettingKey     = "ai_generate"
 	TimeFactorKey            = "time_factor"
 	LimiterSettingKey        = "limiter"
@@ -77,6 +76,9 @@ const (
 	LastRunVersionKey   = "last_run_version"
 )
 
+// Exclude retired account credentials when loading, exporting, or importing settings.
+const legacyAnqiSettingKey = "anqi"
+
 // I18n 来自运行中设置的I18n 对象
 var I18n *i18n.I18n
 
@@ -90,7 +92,7 @@ func (w *Website) InitSetting() {
 	}
 	// load setting from db
 	var settings []*model.Setting
-	w.DB.Find(&settings)
+	w.DB.Where("`key` <> ?", legacyAnqiSettingKey).Find(&settings)
 	var settingMap = map[string]string{}
 	for _, item := range settings {
 		settingMap[item.Key] = item.Value
@@ -121,7 +123,6 @@ func (w *Website) InitSetting() {
 	w.LoadFulltextSetting(settingMap[FulltextSettingKey])
 	w.LoadTitleImageSetting(settingMap[TitleImageSettingKey])
 	w.LoadHtmlCacheSetting(settingMap[HtmlCacheSettingKey])
-	w.LoadAnqiUser(settingMap[AnqiSettingKey])
 	w.LoadAiGenerateSetting(settingMap[AiGenerateSettingKey])
 	w.LoadCollectorSetting(settingMap[CollectorSettingKey])
 	w.LoadKeywordSetting(settingMap[KeywordSettingKey])
@@ -581,17 +582,6 @@ func (w *Website) LoadHtmlCacheSetting(value string) {
 	}
 }
 
-func (w *Website) LoadAnqiUser(value string) {
-	if w.Id != 1 {
-		return
-	}
-	if value != "" {
-		_ = json.Unmarshal([]byte(value), &config.AnqiUser)
-	}
-
-	go w.AnqiCheckLogin(false)
-}
-
 func (w *Website) LoadAiGenerateSetting(value string) {
 	w.AiGenerateConfig = &config.AiGenerateConfig{}
 	if value == "" {
@@ -808,16 +798,17 @@ func (w *Website) LoadMultiLangSetting(value string) {
 }
 
 func (w *Website) LoadTranslateSetting(value string) {
-	w.PluginTranslate = &config.PluginTranslateConfig{}
-	if value == "" {
-		return
+	var setting config.PluginTranslateConfig
+	if value != "" {
+		_ = json.Unmarshal([]byte(value), &setting)
 	}
-
-	if err := json.Unmarshal([]byte(value), w.PluginTranslate); err != nil {
-		return
+	translationSettingsMu.Lock()
+	defer translationSettingsMu.Unlock()
+	if w.pluginTranslate == nil {
+		w.pluginTranslate = &setting
+	} else {
+		*w.pluginTranslate = setting
 	}
-
-	return
 }
 
 func (w *Website) LoadJsonLdSetting(value string) {
@@ -886,36 +877,24 @@ func (w *Website) LoadAiSetting(value string) *eino.Configs {
 	if err := json.Unmarshal([]byte(value), &settings); err != nil {
 		return &settings
 	}
-	// 设置默认模型
-	if len(settings.Configs) > 0 {
-		var cfg *eino.Config
-		if settings.LastModel != "" {
-			for _, v := range settings.Configs {
-				if v.Model == settings.LastModel {
-					cfg = v
-					break
-				}
-			}
-		}
-		if cfg == nil {
-			cfg = settings.Configs[0]
-		}
-		if err := eino.SetGlobalConfig(cfg); err != nil {
-			slog.Error("Failed to initialize AI client", "error", err)
-		} else {
-			slog.Info("AI client initialized successfully")
-		}
-	} else {
-		// 使用官方默认的模型
-		if err := eino.SetOfficialConfig(settings.LastModel); err != nil {
-			slog.Error("Failed to initialize AI client", "error", err)
-		} else {
-			slog.Info("AI client initialized successfully")
-		}
+	w.ApplyAiChatSettings(&settings)
+	if w.Cache != nil {
+		w.Cache.Set("ai_setting", settings, 86400)
 	}
-
-	w.Cache.Set("ai_setting", settings, 86400)
 	return &settings
+}
+
+// ApplyAiChatSettings refreshes the assistant client after loading or saving providers.
+func (w *Website) ApplyAiChatSettings(settings *eino.Configs) {
+	cfg := settings.DefaultConfig()
+	if cfg == nil {
+		eino.ClearGlobalConfig()
+		return
+	}
+	if err := eino.SetGlobalConfig(cfg); err != nil {
+		eino.ClearGlobalConfig()
+		slog.Error("Failed to initialize AI client", "error", err)
+	}
 }
 
 func (w *Website) LoadPlaceSetting(value string) {

@@ -1,5 +1,4 @@
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
 import {
   pluginGetInterferenceConfig,
   pluginSaveInterferenceConfig,
@@ -11,7 +10,6 @@ import React, { useEffect, useState } from 'react';
 import './index.less';
 
 const PluginInterference: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [setting, setSetting] = useState<any>(null);
   const [fetched, setFetched] = useState<boolean>(false);
   const [newKey, setNewKey] = useState<string>('');
@@ -80,18 +78,7 @@ const PluginInterference: React.FC<any> = () => {
                   }),
                 },
               ]}
-              disabled={isVip === false}
             />
-            {!isVip ? (
-              <div
-                className="link mb-normal"
-                onClick={() => {
-                  checkVip(() => {});
-                }}
-              >
-                <FormattedMessage id="plugin.interference.vip-tip" />
-              </div>
-            ) : null}
             <ProFormRadio.Group
               name="mode"
               label={intl.formatMessage({ id: 'plugin.interference.mode' })}
@@ -173,7 +160,6 @@ const PluginInterference: React.FC<any> = () => {
           </ProForm>
         )}
       </Card>
-      <VipModal />
     </NewContainer>
   );
 };

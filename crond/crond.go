@@ -1,9 +1,8 @@
 package crond
 
 import (
-	"math/rand"
+	"log"
 	"sync"
-	"time"
 
 	"github.com/robfig/cron/v3"
 	"kandaoni.com/anqicms/provider"
@@ -54,8 +53,6 @@ func daily8HourTask() {
 func hourlyTask() {
 	// 每小时挖词
 	startDigKeywords()
-	// 每小时检查一次账号状态
-	CheckAuthValid()
 }
 
 func hourly10MinuteTask() {
@@ -176,13 +173,6 @@ func CheckLLMsUpdateFrequency() {
 	}
 }
 
-func CheckAuthValid() {
-	rd := rand.New(rand.NewSource(time.Now().UnixNano()))
-	time.Sleep(time.Duration(rd.Intn(600)+1) * time.Second)
-	defaultSite := provider.CurrentSite(nil)
-	defaultSite.AnqiCheckLogin(false)
-}
-
 func UpdateTimeFactor() {
 	websites := provider.GetWebsites()
 	var ch = make(chan bool, 5)
@@ -208,7 +198,9 @@ func AiArticlePlan() {
 		ch <- true
 		go func(w2 *provider.Website) {
 			defer func() { <-ch }()
-			w2.SyncAiArticlePlan()
+			if err := w2.CancelLegacyAiArticlePlans(); err != nil {
+				log.Println("Cancel legacy AI article plans:", err)
+			}
 		}(w)
 	}
 }

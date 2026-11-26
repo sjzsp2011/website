@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +26,58 @@ import (
 	"kandaoni.com/anqicms/library"
 	"kandaoni.com/anqicms/model"
 )
+
+var translationSettingsMu sync.RWMutex
+
+func (w *Website) TranslationSettings() config.PluginTranslateConfig {
+	translationSettingsMu.RLock()
+	defer translationSettingsMu.RUnlock()
+	if w.pluginTranslate == nil {
+		return config.PluginTranslateConfig{}
+	}
+	return *w.pluginTranslate
+}
+
+// SaveTranslationSettings merges, validates and persists the settings before updating the shared copy.
+func (w *Website) SaveTranslationSettings(payload map[string]json.RawMessage) error {
+	translationSettingsMu.Lock()
+	defer translationSettingsMu.Unlock()
+	var previous config.PluginTranslateConfig
+	if w.pluginTranslate != nil {
+		previous = *w.pluginTranslate
+	}
+	setting := previous
+	if err := library.MergeJSONPayload(payload, &setting); err != nil {
+		return err
+	}
+	var suppliedKey string
+	if raw, ok := payload["openai_api_key"]; ok {
+		_ = json.Unmarshal(raw, &suppliedKey) // MergeJSONPayload already checked the field type.
+	}
+	suppliedKey = strings.TrimSpace(suppliedKey)
+	if suppliedKey == config.TranslationAPIKeyMask {
+		setting.OpenAIAPIKey = previous.OpenAIAPIKey
+	}
+	if setting.Engine == config.TranslateEngineOpenAI {
+		if err := setting.NormalizeOpenAITranslation(); err != nil {
+			return err
+		}
+	}
+	if (suppliedKey == "" || suppliedKey == config.TranslationAPIKeyMask) && previous.OpenAIAPIKey != "" &&
+		setting.OpenAIAPIKey != "" && setting.OpenAIBaseURL != previous.OpenAIBaseURL {
+		return errors.New(w.Tr("TranslationAPIKeyRequiredForNewURL"))
+	}
+	if err := w.SaveSettingValue(TranslateSettingKey, &setting); err != nil {
+		return err
+	}
+	if w.pluginTranslate == nil {
+		w.pluginTranslate = &setting
+	} else {
+		// Request-scoped Website copies share this pointer.
+		*w.pluginTranslate = setting
+	}
+	return nil
+}
 
 func (w *Website) SelfAiTranslateResult(req *AnqiTranslateTextRequest) (*AnqiTranslateTextRequest, error) {
 	// 内容逐个翻译
@@ -435,6 +488,10 @@ func (d *Deepl) CreateGlossary(name, sourceLang, targetLang string, entriesTSV i
 
 // TranslateHtml 将传入的html中的文字翻译成对应的语言
 func (w *Website) TranslateHtml(content string, from, to string) (string, error) {
+	return w.translateHTML(context.Background(), content, from, to)
+}
+
+func (w *Website) translateHTML(ctx context.Context, content, from, to string) (string, error) {
 	// 解析HTML
 	doc, err := html.Parse(strings.NewReader(content))
 	if err != nil {
@@ -449,34 +506,18 @@ func (w *Website) TranslateHtml(content string, from, to string) (string, error)
 	}
 
 	// 翻译文本
-	translatedTexts, err := w.TranslateTexts(texts, from, to)
+	translatedTexts, err := w.translateTexts(ctx, texts, from, to)
 	if err != nil {
 		return "", err
 	}
 
 	// 将翻译后的文本替换回HTML
 	for i, info := range textNodes {
-		if i < len(translatedTexts) {
-			if info.node.Type == html.ElementNode {
-				// 处理属性翻译
-				for j, attr := range info.node.Attr {
-					if (attr.Key == "title" || attr.Key == "placeholder" || attr.Key == "alt" || attr.Key == "value") ||
-						(info.node.Data == "meta" && attr.Key == "content" &&
-							(containsAttr(info.node, "name", "description") ||
-								containsAttr(info.node, "name", "keywords") ||
-								containsAttr(info.node, "name", "title") ||
-								containsAttr(info.node, "property", "description") ||
-								containsAttr(info.node, "property", "keywords") ||
-								containsAttr(info.node, "property", "title") ||
-								containsAttr(info.node, "property", "image:alt") ||
-								containsAttr(info.node, "property", "site_name"))) {
-						info.node.Attr[j].Val = translatedTexts[i]
-						break
-					}
-				}
-			} else if info.node.Type == html.TextNode {
-				info.node.Data = translatedTexts[i]
-			}
+		if info.node.Type == html.ElementNode {
+			attr := &info.node.Attr[info.attrIndex]
+			attr.Val = strings.Replace(attr.Val, strings.TrimSpace(info.text), translatedTexts[i], 1)
+		} else {
+			info.node.Data = strings.Replace(info.node.Data, info.text, translatedTexts[i], 1)
 		}
 	}
 
@@ -490,6 +531,14 @@ func (w *Website) TranslateHtml(content string, from, to string) (string, error)
 
 // TranslateTexts 翻译文本数组
 func (w *Website) TranslateTexts(texts []string, from, to string) ([]string, error) {
+	return w.translateTexts(context.Background(), texts, from, to)
+}
+
+func (w *Website) translateTexts(ctx context.Context, texts []string, from, to string) ([]string, error) {
+	setting := w.TranslationSettings()
+	if setting.Engine == config.TranslateEngineOpenAI && from == "" {
+		from = "auto"
+	}
 	// 创建去重映射表
 	textMap := make(map[string]string)
 	textIndices := make(map[string][]int)
@@ -531,7 +580,7 @@ func (w *Website) TranslateTexts(texts []string, from, to string) ([]string, err
 
 	// 处理未缓存的文本
 	if len(uniqueTexts) > 0 {
-		translatedBatch, err := w.translateBatch(uniqueTexts, from, to)
+		translatedBatch, err := w.translateBatch(ctx, setting, uniqueTexts, from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -560,11 +609,22 @@ func (w *Website) TranslateTexts(texts []string, from, to string) ([]string, err
 }
 
 // translateBatch 批量翻译文本
-func (w *Website) translateBatch(texts []string, from, to string) (map[string]string, error) {
+func (w *Website) translateBatch(ctx context.Context, setting config.PluginTranslateConfig, texts []string, from, to string) (map[string]string, error) {
 	if from == "" {
 		from = "auto"
 	}
 	result := make(map[string]string)
+	if setting.Engine == config.TranslateEngineOpenAI {
+		translated, err := openAITranslateTexts(ctx, setting, texts, from, to)
+		if err != nil {
+			return nil, err
+		}
+		for i, text := range texts {
+			result[text] = translated[i]
+			w.cacheTranslatedText(text, translated[i], from, to)
+		}
+		return result, nil
+	}
 	processBatch := func(text string) error {
 		if len(text) == 0 {
 			return nil
@@ -574,7 +634,7 @@ func (w *Website) translateBatch(texts []string, from, to string) (map[string]st
 		var err error
 		// 最多重试10次
 		for retries := 0; retries < 10; retries++ {
-			translated, err = w.TranslateText(text, from, to)
+			translated, err = w.translateText(setting, text, from, to)
 			if err == nil {
 				break
 			}
@@ -617,31 +677,47 @@ func (w *Website) translateBatch(texts []string, from, to string) (map[string]st
 }
 
 func (w *Website) TranslateText(text, from, to string) (string, error) {
+	setting := w.TranslationSettings()
+	if setting.Engine == config.TranslateEngineOpenAI {
+		if from == "" {
+			from = "auto"
+		}
+		translated, err := openAITranslateTexts(context.Background(), setting, []string{text}, from, to)
+		if err != nil {
+			return "", err
+		}
+		w.cacheTranslatedText(text, translated[0], from, to)
+		return translated[0], nil
+	}
+	return w.translateText(setting, text, from, to)
+}
+
+func (w *Website) translateText(setting config.PluginTranslateConfig, text, from, to string) (string, error) {
 	var content string
 	var err error
 	// 使用AI翻译
-	if w.PluginTranslate.Engine == config.TranslateEngineAi {
+	if setting.Engine == config.TranslateEngineAi {
 		content, err = w.SelfAiTranslate(text, to)
 		if err != nil {
 			return "", err
 		}
-	} else if w.PluginTranslate.Engine == config.TranslateEngineBaidu {
+	} else if setting.Engine == config.TranslateEngineBaidu {
 		// 使用百度翻译
-		baiduTranslate := NewBaiduTranslate(w.PluginTranslate.BaiduAppId, w.PluginTranslate.BaiduAppSecret)
+		baiduTranslate := NewBaiduTranslate(setting.BaiduAppId, setting.BaiduAppSecret)
 		content, err = baiduTranslate.Translate(text, from, to)
 		if err != nil {
 			return "", err
 		}
-	} else if w.PluginTranslate.Engine == config.TranslateEngineYoudao {
+	} else if setting.Engine == config.TranslateEngineYoudao {
 		// 有道翻译
-		youdaoTranslate := NewYoudaoTranslate(w.PluginTranslate.YoudaoAppKey, w.PluginTranslate.YoudaoAppSecret)
+		youdaoTranslate := NewYoudaoTranslate(setting.YoudaoAppKey, setting.YoudaoAppSecret)
 		content, err = youdaoTranslate.Translate(text, from, to)
 		if err != nil {
 			return "", err
 		}
-	} else if w.PluginTranslate.Engine == config.TranslateEngineDeepl {
+	} else if setting.Engine == config.TranslateEngineDeepl {
 		// Deepl翻译
-		client := NewDeepl(w.PluginTranslate.DeeplAuthKey)
+		client := NewDeepl(setting.DeeplAuthKey)
 		glossariesId, err2 := client.GetGlossaries()
 		if err2 != nil {
 			return "", err2
@@ -656,22 +732,25 @@ func (w *Website) TranslateText(text, from, to string) (string, error) {
 			return "", err
 		}
 	} else {
-		err = errors.New(w.Tr("NoAiGenerationSourceSelected"))
+		err = errors.New(w.Tr("TranslationEngineRequired"))
 	}
 	if content != "" {
-		// 数据库存储内容
-		textMd5 := library.Md5(from + "-" + to + "-" + text)
-		textLog := model.TranslateTextLog{
-			Md5:        textMd5,
-			Language:   from,
-			ToLanguage: to,
-			Text:       text,
-			Translated: content,
-		}
-		_ = w.DB.Where("`md5` = ?", textMd5).FirstOrCreate(&textLog).Error
+		w.cacheTranslatedText(text, content, from, to)
 	}
 
 	return content, err
+}
+
+func (w *Website) cacheTranslatedText(text, translated, from, to string) {
+	textMD5 := library.Md5(from + "-" + to + "-" + text)
+	entry := model.TranslateTextLog{
+		Md5:        textMD5,
+		Language:   from,
+		ToLanguage: to,
+		Text:       text,
+		Translated: translated,
+	}
+	_ = w.DB.Where("`md5` = ?", textMD5).FirstOrCreate(&entry).Error
 }
 
 // contains 检查字符串是否在切片中
@@ -694,9 +773,9 @@ func containsAttr(node *html.Node, key, val string) bool {
 }
 
 type textNodeInfo struct {
-	node  *html.Node
-	text  string
-	index int
+	node      *html.Node
+	text      string
+	attrIndex int
 }
 
 // extractTextNodes 从HTML节点中提取需要翻译的文本节点
@@ -736,14 +815,18 @@ func extractTextNodes(n *html.Node) []textNodeInfo {
 				shouldSkip = true
 				break
 			}
+		}
+		for attrIndex, attr := range node.Attr {
 			// 提取需要翻译的属性文本
 			if !shouldSkip && node.Type == html.ElementNode {
 				switch {
-				case (attr.Key == "title" || attr.Key == "placeholder" || attr.Key == "alt" || attr.Key == "value") && strings.TrimSpace(attr.Val) != "":
+				case (attr.Key == "title" || attr.Key == "placeholder" || attr.Key == "alt" ||
+					(attr.Key == "value" && node.Data == "input" && (containsAttr(node, "type", "submit") ||
+						containsAttr(node, "type", "reset") || containsAttr(node, "type", "button")))) && strings.TrimSpace(attr.Val) != "":
 					textNodes = append(textNodes, textNodeInfo{
-						node:  node,
-						text:  attr.Val,
-						index: len(textNodes),
+						node:      node,
+						text:      attr.Val,
+						attrIndex: attrIndex,
 					})
 				case node.Data == "meta" && attr.Key == "content" &&
 					(containsAttr(node, "name", "description") ||
@@ -755,9 +838,9 @@ func extractTextNodes(n *html.Node) []textNodeInfo {
 						containsAttr(node, "property", "image:alt") ||
 						containsAttr(node, "property", "site_name")) && strings.TrimSpace(attr.Val) != "":
 					textNodes = append(textNodes, textNodeInfo{
-						node:  node,
-						text:  attr.Val,
-						index: len(textNodes),
+						node:      node,
+						text:      attr.Val,
+						attrIndex: attrIndex,
 					})
 				}
 			}
@@ -765,9 +848,8 @@ func extractTextNodes(n *html.Node) []textNodeInfo {
 
 		if !shouldSkip && node.Type == html.TextNode && strings.TrimSpace(node.Data) != "" {
 			textNodes = append(textNodes, textNodeInfo{
-				node:  node,
-				text:  strings.TrimSpace(node.Data),
-				index: len(textNodes),
+				node: node,
+				text: strings.TrimSpace(node.Data),
 			})
 		}
 

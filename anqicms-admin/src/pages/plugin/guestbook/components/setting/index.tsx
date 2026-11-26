@@ -1,4 +1,3 @@
-import { useVipModal } from '@/components/vipModal';
 import { getSiteInfo, getWebsiteList } from '@/services';
 import {
   pluginGetGuestbookSetting,
@@ -25,7 +24,6 @@ export type GuestbookSettingProps = {
 };
 
 const GuestbookSetting: React.FC<GuestbookSettingProps> = (props) => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const formRef = useRef<ProFormInstance>();
   const actionRef = useRef<ActionType>();
   const [visible, setVisible] = useState<boolean>(false);
@@ -195,7 +193,6 @@ const GuestbookSetting: React.FC<GuestbookSettingProps> = (props) => {
 
   return (
     <>
-      <VipModal />
       <div
         onClick={() => {
           setVisible(!visible);
@@ -259,22 +256,9 @@ const GuestbookSetting: React.FC<GuestbookSettingProps> = (props) => {
                 value: 2,
               },
             ]}
-            disabled={isVip === false}
             fieldProps={{
               onChange: handleChangePushWay,
             }}
-            extra={
-              !isVip ? (
-                <div
-                  className="link"
-                  onClick={() => {
-                    checkVip(() => {});
-                  }}
-                >
-                  <FormattedMessage id="plugin.guestbook.vip-tip" />
-                </div>
-              ) : null
-            }
           />
           {setting.push_way === 0 && (
             <ProFormText

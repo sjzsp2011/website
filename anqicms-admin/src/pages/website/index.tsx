@@ -1,4 +1,3 @@
-import { useVipModal } from '@/components/vipModal';
 import {
   deleteWebsiteInfo,
   getSiteInfo,
@@ -21,13 +20,11 @@ import WebsiteForm from './components/form';
 
 let submiting = false;
 const WebsiteList: React.FC = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const { initialState } = useModel('@@initialState');
   const actionRef = useRef<ActionType>();
   const [editVisible, setEditVisible] = useState<boolean>(false);
   const [editInfo, setEditInfo] = useState<any>({});
   const [siteInfo, setSiteInfo] = useState<any>({});
-  const [multiSites, setMultiSites] = useState<any[]>([]);
   const [defaultSite, setDefaultSite] = useState<any>({});
   const inputRef = useRef<any>();
   const intl = useIntl();
@@ -117,21 +114,11 @@ const WebsiteList: React.FC = () => {
   };
 
   const handleAddSite = () => {
-    if (multiSites.length > 4) {
-      checkVip(() => {
-        handleEdit({
-          mysql: { use_default: true },
-          initialed: false,
-          status: 1,
-        });
-      }, intl.formatMessage({ id: 'website.vip.multi-site' }));
-    } else {
-      handleEdit({
-        mysql: { use_default: true },
-        initialed: false,
-        status: 1,
-      });
-    }
+    handleEdit({
+      mysql: { use_default: true },
+      initialed: false,
+      status: 1,
+    });
   };
 
   const columns: ProColumns<any>[] = [
@@ -240,7 +227,6 @@ const WebsiteList: React.FC = () => {
         actionRef={actionRef}
         request={async (params) => {
           const res = await getWebsiteList(params);
-          setMultiSites(res.data || []);
           setDefaultSite(res.data?.[0] || {});
           return res;
         }}
@@ -276,7 +262,6 @@ const WebsiteList: React.FC = () => {
           rootPath={defaultSite.root_path}
         />
       )}
-      <VipModal />
     </PageContainer>
   );
 };

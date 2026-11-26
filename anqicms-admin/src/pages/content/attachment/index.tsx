@@ -1,5 +1,4 @@
 import NewContainer from '@/components/NewContainer';
-import AiImageGenerate from '@/components/aiimage';
 import AttachmentAddUrl from '@/components/attachment/addUrl';
 import ImageItem from '@/components/attachment/image';
 import {
@@ -60,7 +59,6 @@ class ImageList extends React.Component<intlProps> {
 
     indeterminate: false,
     selectedAll: false,
-    aiVisible: false,
     kw: '',
     newKey: '',
   };
@@ -492,14 +490,6 @@ class ImageList extends React.Component<intlProps> {
     return pares.join('.');
   };
 
-  handleSubmitAi = () => {
-    this.getImageList();
-    this.setState({
-      aiVisible: false,
-      detailVisible: false,
-    });
-  };
-
   handleSubmitAddUrl = () => {
     this.getImageList();
     this.setState({
@@ -522,7 +512,6 @@ class ImageList extends React.Component<intlProps> {
       editVisible,
       indeterminate,
       selectedAll,
-      aiVisible,
       addUrlVisible,
       newKey,
     } = this.state;
@@ -612,23 +601,6 @@ class ImageList extends React.Component<intlProps> {
                               <FormattedMessage id="content.attachment.upload" />
                             </Button>
                           </Upload>
-                        ),
-                      },
-                      {
-                        key: 'generate',
-                        label: (
-                          <Button
-                            type="link"
-                            block
-                            onClick={() =>
-                              this.setState({
-                                aiVisible: true,
-                                currentAttach: {},
-                              })
-                            }
-                          >
-                            <FormattedMessage id="component.aiimage.generate" />
-                          </Button>
                         ),
                       },
                       {
@@ -828,15 +800,6 @@ class ImageList extends React.Component<intlProps> {
                 </div>
               </div>
               <Space size={16} align="center" className="btns">
-                {currentAttach.is_image === 1 &&
-                  currentAttach.is_remote !== 1 && (
-                    <Button
-                      type="primary"
-                      onClick={() => this.setState({ aiVisible: true })}
-                    >
-                      <FormattedMessage id="component.aiimage.edit" />
-                    </Button>
-                  )}
                 {currentAttach.is_remote !== 1 && (
                   <Upload
                     name="file"
@@ -904,17 +867,6 @@ class ImageList extends React.Component<intlProps> {
               }}
             />
           </ModalForm>
-        )}
-        {aiVisible && (
-          <AiImageGenerate
-            onCancel={() => {
-              this.setState({ aiVisible: false });
-            }}
-            onSubmit={this.handleSubmitAi}
-            open={aiVisible}
-            attach={currentAttach}
-            intl={this.props.intl}
-          />
         )}
         {addUrlVisible && (
           <AttachmentAddUrl

@@ -1,52 +1,16 @@
-import { anqiSendFeedback } from '@/services';
-import { FormOutlined } from '@ant-design/icons';
-import {
-  ModalForm,
-  ProFormRadio,
-  ProFormTextArea,
-} from '@ant-design/pro-components';
 import { FormattedMessage, useIntl, useModel } from '@umijs/max';
-import { FloatButton, message } from 'antd';
+import { FloatButton } from 'antd';
 import { useState } from 'react';
 import AiChat from '../aiChat';
 import './index.less';
 
-let loading = false;
 const Footer: React.FC = () => {
   const { initialState } = useModel('@@initialState');
-  const [visible, setVisible] = useState<boolean>(false);
   const [aiChatVisible, setAiChatVisible] = useState<boolean>(false);
   const currentYear = new Date().getFullYear();
   const intl = useIntl();
 
   const isLogin = initialState?.currentUser?.id > 0;
-  const handleFeedback = async (values: any) => {
-    if (loading) {
-      return;
-    }
-    loading = true;
-    const postData = Object.assign({}, values);
-    const hide = message.loading(
-      intl.formatMessage({ id: 'component.footer.submitting' }),
-      0,
-    );
-    anqiSendFeedback(postData)
-      .then((res) => {
-        if (res.code === 0) {
-          message.info(
-            res.msg || intl.formatMessage({ id: 'component.footer.submitted' }),
-          );
-          setVisible(false);
-        } else {
-          message.info(res.msg);
-        }
-      })
-      .finally(() => {
-        loading = false;
-        hide();
-      });
-  };
-
   const handleOpenAiChat = () => {
     setAiChatVisible(true);
   };
@@ -67,15 +31,6 @@ const Footer: React.FC = () => {
           rel="noreferrer"
         >
           <FormattedMessage id="component.footer.template-manual" />
-        </a>
-        <span>|</span>
-        <a
-          className="feedback link"
-          onClick={() => {
-            setVisible(true);
-          }}
-        >
-          <FormattedMessage id="component.footer.feedback" />
         </a>
       </div>
       <FloatButton.Group shape="square" style={{ insetInlineEnd: 10 }}>
@@ -101,52 +56,9 @@ const Footer: React.FC = () => {
             onClick={handleOpenAiChat}
           />
         )}
-        <FloatButton
-          onClick={() => {
-            setVisible(true);
-          }}
-          icon={<FormOutlined />}
-        />
         <FloatButton.BackTop visibilityHeight={1000} />
       </FloatButton.Group>
       <AiChat visible={aiChatVisible} onClose={() => setAiChatVisible(false)} />
-      <ModalForm
-        open={visible}
-        width={600}
-        title={intl.formatMessage({ id: 'component.footer.feedback' })}
-        layout="horizontal"
-        onOpenChange={(flag) => {
-          setVisible(flag);
-        }}
-        onFinish={handleFeedback}
-      >
-        <ProFormRadio.Group
-          name="type"
-          required
-          width="lg"
-          label={intl.formatMessage({ id: 'component.footer.feedback.type' })}
-          valueEnum={{
-            bug: intl.formatMessage({ id: 'component.footer.feedback.bug' }),
-            suggest: intl.formatMessage({
-              id: 'component.footer.feedback.suggest',
-            }),
-            consult: intl.formatMessage({
-              id: 'component.footer.feedback.consult',
-            }),
-          }}
-        />
-        <ProFormTextArea
-          name="content"
-          required
-          label={intl.formatMessage({
-            id: 'component.footer.feedback.description',
-          })}
-          width="lg"
-          fieldProps={{
-            rows: 6,
-          }}
-        />
-      </ModalForm>
     </div>
   );
 };

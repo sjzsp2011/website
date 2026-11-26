@@ -8,8 +8,6 @@ import CollapseItem from '@/components/collaspeItem';
 import Keywords from '@/components/keywords';
 import SelectColor from '@/components/selectColor';
 import {
-  anqiExtractDescription,
-  anqiExtractKeywords,
   deleteArchive,
   deleteArchiveImage,
   getArchiveInfo,
@@ -559,88 +557,6 @@ class ArchiveForm extends React.Component<intlProps> {
         });
       })
       .catch(() => {});
-  };
-
-  handleExtractDescription = () => {
-    if (this.state.content.length < 100) {
-      message.error(
-        this.props.intl.formatMessage({
-          id: 'content.archive.content.length.error',
-        }),
-      );
-      return false;
-    }
-    Modal.confirm({
-      title: this.props.intl.formatMessage({
-        id: 'content.archive.extract.description',
-      }),
-      content: this.props.intl.formatMessage({
-        id: 'content.archive.extract.description.content',
-      }),
-      onOk: () => {
-        anqiExtractDescription({
-          text: this.state.content,
-        })
-          .then((res) => {
-            if (res.code === 0) {
-              this.formRef?.current?.setFieldsValue({
-                description: res.data,
-              });
-            } else {
-              message.info(res.msg);
-            }
-          })
-          .catch((err) => {
-            message.error(
-              err.msg ||
-                this.props.intl.formatMessage({
-                  id: 'content.submit.failure',
-                }),
-            );
-          });
-      },
-    });
-  };
-
-  handleExtractKeywords = () => {
-    if (this.state.content.length < 100) {
-      message.error(
-        this.props.intl.formatMessage({
-          id: 'content.archive.content.length.error',
-        }),
-      );
-      return false;
-    }
-    Modal.confirm({
-      title: this.props.intl.formatMessage({
-        id: 'content.archive.extract.keywords',
-      }),
-      content: this.props.intl.formatMessage({
-        id: 'content.archive.extract.keywords.content',
-      }),
-      onOk: () => {
-        anqiExtractKeywords({
-          text: this.state.content,
-        })
-          .then((res) => {
-            if (res.code === 0) {
-              this.formRef?.current?.setFieldsValue({
-                keywords: res.data?.join(','),
-              });
-            } else {
-              message.info(res.msg);
-            }
-          })
-          .catch((err) => {
-            message.error(
-              err.msg ||
-                this.props.intl.formatMessage({
-                  id: 'content.submit.failure',
-                }),
-            );
-          });
-      },
-    });
   };
 
   handleChooseKeywords = () => {
@@ -1656,12 +1572,6 @@ class ArchiveForm extends React.Component<intlProps> {
                         <Space size={16}>
                           <span
                             className="link"
-                            onClick={this.handleExtractKeywords}
-                          >
-                            <FormattedMessage id="content.keywords.extract" />
-                          </span>
-                          <span
-                            className="link"
                             onClick={this.handleChooseKeywords}
                           >
                             <FormattedMessage id="content.keywords.select" />
@@ -1683,12 +1593,6 @@ class ArchiveForm extends React.Component<intlProps> {
                             onClick={this.aiTdkGenerate}
                           >
                             <FormattedMessage id="component.aitdk.btn.generate" />
-                          </span>
-                          <span
-                            className="link extract-tag"
-                            onClick={this.handleExtractDescription}
-                          >
-                            <FormattedMessage id="content.description.extract" />
                           </span>
                         </Space>
                       </div>

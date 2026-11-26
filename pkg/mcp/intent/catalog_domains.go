@@ -777,21 +777,6 @@ var domainIntentCatalog = []*IntentSpec{
 		}),
 	},
 	{
-		Name: "siteops_upgrade", Title: "版本检查与升级", Domain: DomainSiteOps, Risk: RiskSystem,
-		Desc:       "检查新版本并执行升级。**破坏性操作，默认关闭**。action: check/info/upgrade。",
-		DefaultOff: true,
-		Params: map[string]ParamSpec{
-			"action": {Type: "string", Desc: "操作", Required: true, Enum: []string{"check", "info", "upgrade"}},
-		},
-		Required: []string{"action"},
-		Caps:     []string{"api_invoke"},
-		Compose: invokeRoutes("siteops_upgrade", map[string]string{
-			"check":   "GET /version/check",
-			"info":    "GET /version/info",
-			"upgrade": "POST /version/upgrade",
-		}),
-	},
-	{
 		Name: "siteops_website", Title: "多站点管理", Domain: DomainSiteOps, Risk: RiskSystem,
 		Desc:       "多站点的增删查。**默认关闭**。action: list/detail/save/delete。",
 		DefaultOff: true,
@@ -888,7 +873,6 @@ var gatedDomainIntents = map[string]string{
 	"system_multilang":   "多语言子站的保存、删除与同步，影响其他站点",
 	"system_rewrite":     "伪静态规则决定全站 URL 结构，写错即全站 404",
 	"siteops_backup":     "数据库备份/导入/恢复/清理（主机级，破坏性）",
-	"siteops_upgrade":    "版本检查与升级（主机级，破坏性）",
 	"siteops_website":    "多站点增删（主机级）",
 }
 

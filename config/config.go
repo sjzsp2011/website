@@ -92,8 +92,6 @@ func initJSON() {
 
 var ExecPath string
 var Server ServerJson
-var AnqiUser AnqiUserConfig
-
 var GoogleValid bool // can visit google or not
 
 type RestartConfig struct {

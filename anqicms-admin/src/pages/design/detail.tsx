@@ -36,7 +36,6 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
-import TemplateShare from './components/share';
 import './index.less';
 
 let autoBackup = false;
@@ -59,8 +58,6 @@ const DesignDetail: React.FC = () => {
 
   const inputRef = useRef<any>();
   const inputRef2 = useRef<any>();
-
-  const anqiUser = initialState?.anqiUser;
 
   const fetchDesignInfo = async () => {
     const searchParams = new URLSearchParams(window.location.search);
@@ -635,10 +632,6 @@ const DesignDetail: React.FC = () => {
     },
   ];
 
-  const canShare =
-    anqiUser?.auth_id > 0 &&
-    (designInfo.template_id === 0 || designInfo.auth_id === anqiUser?.auth_id);
-
   return (
     <PageContainer
       title={
@@ -690,27 +683,6 @@ const DesignDetail: React.FC = () => {
               <Button onClick={handleRestoreDesignData}>
                 <FormattedMessage id="design.detail.template.restore" />
               </Button>
-            </Tooltip>
-          ),
-          (canShare || !anqiUser || anqiUser?.auth_id === 0) && (
-            <Tooltip
-              title={intl.formatMessage({
-                id: 'design.detail.template.tomarket',
-              })}
-              key="share"
-            >
-              <TemplateShare
-                designInfo={designInfo}
-                canShare={canShare}
-                templateId={designInfo.template_id}
-                onFinished={() => {
-                  actionRef.current?.reload();
-                }}
-              >
-                <Button>
-                  <FormattedMessage id="design.detail.template.share" />
-                </Button>
-              </TemplateShare>
             </Tooltip>
           ),
         ]}

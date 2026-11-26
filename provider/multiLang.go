@@ -3,6 +3,7 @@ package provider
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/sync/singleflight"
 	"kandaoni.com/anqicms/config"
 	"kandaoni.com/anqicms/library"
 	"kandaoni.com/anqicms/model"
@@ -933,7 +935,8 @@ func (w *Website) GetTextLogs(toLanguage string) []*model.TranslateTextLog {
 	return textLogs
 }
 
-var uriLangLocks = sync.Map{}
+var translationPageLoads sync.Map
+var openAIPageTranslations singleflight.Group
 
 // GetOrSetMultiLangCache siteType = single 模式下，翻译缓存的页面内容
 // 缓存路径规则： /cache/multiLang/{lang}/{uri_hash}
@@ -942,28 +945,71 @@ var uriLangLocks = sync.Map{}
 // 如果翻译失败，则回退到原始内容
 // 存储的第一行，为文件的uri。第二行开始为内容，因为文件名不是真实的uri
 // 首页缓存10分钟，列表页缓存1小时，内页长期缓存，如使用 no-cache，则不缓存
-func (w *Website) GetOrSetMultiLangCache(uri string, lang string, params map[string]string) (string, error) {
+func (w *Website) GetOrSetMultiLangCache(ctx context.Context, uri string, lang string, params map[string]string) (string, error) {
 	uriHash := library.Md5(uri)
 	cachePath := w.CachePath + "multiLang/" + lang + "/" + uriHash
-	lock, _ := uriLangLocks.LoadOrStore(uriHash, &sync.Mutex{})
-	mutex := lock.(*sync.Mutex)
-	// 加锁
-	mutex.Lock()
-	defer mutex.Unlock()
-	defer uriLangLocks.Delete(uriHash)
-
-	// 默认1小时
 	var expireTime int64 = 3600
-	if params["match"] == "index" {
-		// 首页缓存10分钟
+	switch params["match"] {
+	case "index":
 		expireTime = 600
-	} else if params["match"] == PatternArchive || params["match"] == PatternPage {
-		// 详情页缓存1个月
+	case PatternArchive, PatternPage:
 		expireTime = 3600 * 24 * 30
 	}
 	if params["Cache-Control"] == "no-cache" {
 		expireTime = 0
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if w.TranslationSettings().Engine != config.TranslateEngineOpenAI || !w.MultiLanguage.AutoTranslate {
+		return w.renderTranslatedPage(ctx, uri, lang, cachePath, expireTime)
+	}
+
+	// A page build may outlive the browser request that started it.
+	site := *w
+	site.ctx = nil
+	completed := openAIPageTranslations.DoChan(cachePath, func() (value any, err error) {
+		defer func() {
+			if failure := recover(); failure != nil {
+				err = fmt.Errorf("translation page build stopped unexpectedly (%T)", failure)
+				log.Printf("translate page (%s): %v", lang, err)
+				value = ""
+			}
+		}()
+		buildContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		return site.renderTranslatedPage(buildContext, uri, lang, cachePath, expireTime)
+	})
+	select {
+	case result := <-completed:
+		return result.Val.(string), result.Err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (w *Website) renderTranslatedPage(ctx context.Context, uri, lang, cachePath string, expireTime int64) (page string, err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("translate page (%s): %v", lang, err)
+		}
+	}()
+	done := make(chan struct{})
+	for {
+		pending, exists := translationPageLoads.LoadOrStore(cachePath, done)
+		if !exists {
+			break
+		}
+		select {
+		case <-pending.(chan struct{}):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	defer func() {
+		translationPageLoads.Delete(cachePath)
+		close(done)
+	}()
 
 	var oldBuf []byte
 	// 先检查缓存文件是否存在，如果存在，直接返回
@@ -981,31 +1027,27 @@ func (w *Website) GetOrSetMultiLangCache(uri string, lang string, params map[str
 		}
 	}
 	// 如果不存在，则先获取原始内容，并进行翻译
-	buf, err := w.GetHtmlDataByLocal(uri, lang, false)
+	buf, err := w.getHTMLDataByLocal(ctx, uri, lang, false)
 	if err != nil {
-		return string(oldBuf), err
+		if len(oldBuf) > 0 {
+			buf = oldBuf
+		}
+		return string(buf), fmt.Errorf("render source page: %w", err)
 	}
 	// 如果不是正常的文本，如读取的是二进制文件，如图片内容等，则不进行翻译
 	if !utf8.Valid(buf) {
 		return string(buf), nil
 	}
-	req := &AnqiTranslateHtmlRequest{
-		Uri:         uri,
-		Html:        string(buf),
-		Language:    w.System.Language,
-		ToLanguage:  lang,
-		IgnoreClass: []string{"languages", "language"},
-		IgnoreId:    []string{"languages", "language"},
+	engine := w.TranslationSettings().Engine
+	if engine == config.TranslateEngineDefault || (engine == config.TranslateEngineOpenAI && !w.MultiLanguage.AutoTranslate) {
+		if len(oldBuf) > 0 {
+			return string(oldBuf), nil
+		}
+		return string(buf), nil
 	}
-	var result string
-	if w.PluginTranslate.Engine == config.TranslateEngineDefault {
-		result, err = w.AnqiTranslateHtml(req)
-	} else {
-		result, err = w.TranslateHtml(string(buf), w.System.Language, lang)
-	}
+	result, err := w.translateHTML(ctx, string(buf), w.System.Language, lang)
 	if err != nil {
 		// 如果翻译失败，则回退到原始内容
-		log.Println("translate html failed:", err)
 		if len(oldBuf) > 0 {
 			return string(oldBuf), err
 		}
@@ -1014,7 +1056,7 @@ func (w *Website) GetOrSetMultiLangCache(uri string, lang string, params map[str
 
 	// 翻译完毕，修改lang
 	re, _ := regexp.Compile(`(?i)<html.*?>`)
-	result = re.ReplaceAllString(result, "<html lang=\""+req.ToLanguage+"\">")
+	result = re.ReplaceAllString(result, "<html lang=\""+lang+"\">")
 	// 替换URL
 	langSite := w.MultiLanguage.GetSite(lang)
 	if langSite != nil {

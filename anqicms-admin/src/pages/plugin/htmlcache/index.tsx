@@ -1,5 +1,4 @@
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
 import {
   pluginBuildHtmlArchiveCache,
   pluginBuildHtmlCache,
@@ -42,7 +41,6 @@ let xhr: any = null;
 let pushXhr: any = null;
 
 const PluginHtmlCache: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [status, setStatus] = useState<any>(null);
   const [pushStatus, setPushStatus] = useState<any>(null);
   const [setting, setSetting] = useState<any>({});
@@ -398,19 +396,6 @@ const PluginHtmlCache: React.FC<any> = () => {
                   fieldProps={{
                     onChange: changeStorageType,
                   }}
-                  disabled={isVip === false}
-                  extra={
-                    !isVip ? (
-                      <div
-                        className="link"
-                        onClick={() => {
-                          checkVip(() => {});
-                        }}
-                      >
-                        <FormattedMessage id="plugin.htmlcache.vip-tip" />
-                      </div>
-                    ) : null
-                  }
                   options={[
                     {
                       value: '',
@@ -1021,7 +1006,6 @@ const PluginHtmlCache: React.FC<any> = () => {
           }}
         />
       )}
-      <VipModal />
     </NewContainer>
   );
 };

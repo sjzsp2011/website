@@ -17,7 +17,6 @@ func manageRoute(app *iris.Application) {
 		manage.Post("/login", manageController.AdminLogin)
 		manage.Get("/captcha", manageController.GenerateCaptcha)
 		manage.Get("/siteinfo", manageController.GetCurrentSiteInfo)
-		manage.Post("/anqi/feedback", manageController.AnqiSendFeedback)
 
 		password := manage.Party("/password")
 		{
@@ -29,18 +28,10 @@ func manageRoute(app *iris.Application) {
 		version := manage.Party("/version", middleware.ParseAdminToken)
 		{
 			version.Get("/info", manageController.Version)
-			version.Get("/check", manageController.CheckVersion)
-			version.Post("/upgrade", manageController.VersionUpgrade)
 		}
 
 		anqi := manage.Party("/anqi", middleware.ParseAdminToken)
 		{
-			anqi.Get("/info", manageController.GetAnqiInfo)
-			anqi.Get("/check", manageController.CheckAnqiInfo)
-			anqi.Post("/login", manageController.AnqiLogin)
-			anqi.Post("/upload", manageController.AnqiUploadAttachment)
-			anqi.Post("/template/share", manageController.AnqiShareTemplate)
-			anqi.Post("/template/download", manageController.AnqiDownloadTemplate)
 			anqi.Post("/translate", manageController.AnqiTranslateArticle)
 			anqi.Post("/ai/pseudo", manageController.AnqiAiPseudoArticle)
 			anqi.Post("/ai/stream", manageController.AuthAiGenerateStream)
@@ -57,11 +48,6 @@ func manageRoute(app *iris.Application) {
 			anqi.Post("/ai/agents/{id}/chat", manageController.AiAgentChat)
 			anqi.Get("/ai/health", manageController.AiHealth)
 			anqi.Get("/ai/chat/trace", manageController.AiChatTrace)
-			anqi.Post("/ai/image", manageController.AuthAiGenerateImage)
-			anqi.Post("/ai/image/confirm", manageController.AuthAiGenerateImageConfirm)
-			anqi.Get("/ai/image/histories", manageController.AuthAiGenerateImageHistories)
-			anqi.Post("/extract/keywords", manageController.AuthExtractKeywords)
-			anqi.Post("/extract/description", manageController.AuthExtractDescription)
 			anqi.Get("/skill/list", manageController.SkillList)
 			anqi.Get("/skill/detail", manageController.SkillDetail)
 			anqi.Post("/skill/edit", manageController.SkillEdit)
@@ -130,7 +116,6 @@ func manageRoute(app *iris.Application) {
 			setting.Get("/sensitive/words", manageController.SettingSensitiveWords)
 			setting.Post("/sensitive/words", manageController.SettingSensitiveWordsForm)
 			setting.Post("/sensitive/check", manageController.SettingSensitiveWordsCheck)
-			setting.Post("/sensitive/sync", manageController.SettingSensitiveWordsSync)
 			setting.Post("/migratedb", manageController.SettingMigrateDB)
 		}
 

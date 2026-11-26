@@ -1,5 +1,4 @@
 import AttachmentSelect from '@/components/attachment';
-import { useVipModal } from '@/components/vipModal';
 import {
   checkOpenAIApi,
   getAiGenerateSetting,
@@ -27,7 +26,6 @@ export type CollectorSettingProps = {
 };
 
 const CollectorSetting: React.FC<CollectorSettingProps> = (props) => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [visible, setVisible] = useState<boolean>(false);
   const [fetched, setFetched] = useState<boolean>(false);
   const [setting, setSetting] = useState<any>({});
@@ -194,7 +192,6 @@ const CollectorSetting: React.FC<CollectorSettingProps> = (props) => {
 
   return (
     <>
-      <VipModal />
       <div
         onClick={() => {
           handleSetVisible(!visible);
@@ -347,16 +344,11 @@ const CollectorSetting: React.FC<CollectorSettingProps> = (props) => {
           />
           <ProFormRadio.Group
             name="ai_engine"
+            rules={[{ required: true }]}
             label={intl.formatMessage({
               id: 'plugin.aigenerate.source',
             })}
             options={[
-              {
-                label: intl.formatMessage({
-                  id: 'plugin.aigenerate.source.anqicms',
-                }),
-                value: '',
-              },
               {
                 label: intl.formatMessage({
                   id: 'plugin.aigenerate.source.openai',
@@ -395,18 +387,7 @@ const CollectorSetting: React.FC<CollectorSettingProps> = (props) => {
                 </Tag>
               </div>
             }
-            disabled={isVip === false}
           />
-          {!isVip ? (
-            <div
-              className="link mb-normal"
-              onClick={() => {
-                checkVip(() => {});
-              }}
-            >
-              <FormattedMessage id="plugin.aigenerate.vip-tip" />
-            </div>
-          ) : null}
           {(aiEngine === 'openai' || aiEngine === 'deepseek') && (
             <>
               <ProFormText

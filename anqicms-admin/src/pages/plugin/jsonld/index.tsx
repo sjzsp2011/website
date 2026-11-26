@@ -1,6 +1,5 @@
 import AttachmentSelect from '@/components/attachment';
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
 import {
   getCategories,
   getModules,
@@ -24,7 +23,6 @@ import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 
 const Pluginjsonld: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const formRef = useRef<ProFormInstance>();
   const [setting, setSetting] = useState<any>({ module: [] });
   const [fetched, setFetched] = useState<boolean>(false);
@@ -528,9 +526,7 @@ const Pluginjsonld: React.FC<any> = () => {
   };
 
   const handleCategoryOpen = () => {
-    checkVip(() => {
-      setCategoryModalVisible(true);
-    }, intl.formatMessage({ id: 'plugin.jsonld.vip-feature' }));
+    setCategoryModalVisible(true);
   };
 
   return (
@@ -545,16 +541,6 @@ const Pluginjsonld: React.FC<any> = () => {
               <p>
                 <FormattedMessage id="plugin.jsonld.tips.2" />
               </p>
-              {!isVip ? (
-                <p
-                  className="link"
-                  onClick={() => {
-                    checkVip(() => {});
-                  }}
-                >
-                  <FormattedMessage id="plugin.jsonld.vip-tip" />
-                </p>
-              ) : null}
             </div>
           }
         />
@@ -669,18 +655,6 @@ const Pluginjsonld: React.FC<any> = () => {
                         title={intl.formatMessage({
                           id: 'plugin.jsonld.module',
                         })}
-                        extra={
-                          !isVip ? (
-                            <div
-                              className="link"
-                              onClick={() => {
-                                checkVip(() => {});
-                              }}
-                            >
-                              <FormattedMessage id="plugin.jsonld.click-view-vip" />
-                            </div>
-                          ) : null
-                        }
                       >
                         {modules?.map((item: any) => (
                           <div className="text-groups mt-normal" key={item.id}>
@@ -704,7 +678,6 @@ const Pluginjsonld: React.FC<any> = () => {
                                     id: 'plugin.jsonld.list-type',
                                   })}
                                   options={listTypes}
-                                  disabled={isVip === false}
                                 />
                               </div>
                               <div className="text-value">
@@ -714,7 +687,6 @@ const Pluginjsonld: React.FC<any> = () => {
                                     id: 'plugin.jsonld.schema-type',
                                   })}
                                   options={archiveTypes}
-                                  disabled={isVip === false}
                                 />
                               </div>
                             </div>
@@ -925,7 +897,6 @@ const Pluginjsonld: React.FC<any> = () => {
                             value: 2,
                           },
                         ]}
-                        disabled={isVip === false}
                         fieldProps={{
                           onChange: (e) =>
                             handleChangeField(e.target.value, 'data_type'),
@@ -1323,7 +1294,6 @@ const Pluginjsonld: React.FC<any> = () => {
           />
         </ModalForm>
       )}
-      <VipModal />
     </NewContainer>
   );
 };

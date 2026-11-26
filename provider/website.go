@@ -100,7 +100,7 @@ type Website struct {
 	PluginInterference *config.PluginInterference
 	PluginTimeFactor   *config.PluginTimeFactor
 	MultiLanguage      *config.PluginMultiLangConfig
-	PluginTranslate    *config.PluginTranslateConfig
+	pluginTranslate    *config.PluginTranslateConfig
 	PluginJsonLd       *config.PluginJsonLdConfig
 	Currency           *config.CurrencyConfig
 	PluginLLMs         *config.PluginLLMsConfig

@@ -17,7 +17,7 @@ type AiGenerateConfig struct {
 	StartHour       int              `json:"start_hour"`        // 每天开始时间（时）：0-23
 	EndHour         int              `json:"end_hour"`          //每天结束时间（时）：0-23
 	DailyLimit      int              `json:"daily_limit"`       //每日数量
-	AiEngine        string           `json:"ai_engine"`         // ai 引擎：default=官方接口，openai=自定义openai，spark=星火大模型，deepseek=DeepSeek
+	AiEngine        string           `json:"ai_engine"`         // ai 引擎：空值=未配置，openai=自定义openai，spark=星火大模型，deepseek=DeepSeek
 	AiTranslate     bool             `json:"ai_translate"`      // 是否使用AI翻译
 	OpenAIKeys      []OpenAIKey      `json:"open_ai_keys"`      // self openai key
 	ApiValid        bool             `json:"api_valid" ast:"-"` // api地址是否可用
@@ -53,4 +53,5 @@ const (
 	TranslateEngineGoogle  = "google"
 	TranslateEngineAi      = "ai"
 	TranslateEngineDeepl   = "deepl"
+	TranslateEngineOpenAI  = "openai"
 )

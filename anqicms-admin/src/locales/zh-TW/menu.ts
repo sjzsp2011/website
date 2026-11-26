@@ -134,7 +134,6 @@ export default {
   'menu.website': '多網站管理',
   'menu.website.website': '多網站管理',
   'menu.website.multilang': '多語系網站',
-  'menu.upgrade': '系統升級',
   'menu.cache': '更新快取',
   'menu.preview': '前端預覽',
   'menu.order': '訂單',

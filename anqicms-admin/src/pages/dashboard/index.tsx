@@ -1,7 +1,5 @@
 import {
-  checkVersion,
   getDashboardInfo,
-  getStatisticOrder,
   getStatisticSpider,
   getStatisticSummary,
   getStatisticTraffic,
@@ -11,9 +9,7 @@ import {
   FileAddOutlined,
   LayoutOutlined,
   LinkOutlined,
-  MoneyCollectOutlined,
   ProductOutlined,
-  SendOutlined,
   ShopOutlined,
   TagOutlined,
 } from '@ant-design/icons';
@@ -29,7 +25,6 @@ import {
   Statistic,
   Tabs,
   Tag,
-  Tooltip,
   message,
 } from 'antd';
 import dayjs from 'dayjs';
@@ -42,11 +37,9 @@ const { TabPane } = Tabs;
 const Dashboard: React.FC = () => {
   const { initialState, setInitialState } = useModel('@@initialState');
   const [data, setData] = useState<any>({});
-  const [ordersData, setOrdersData] = useState<any[]>([]);
   const [spiderData, setSpiderData] = useState<any[]>([]);
   const [trafficData, setTrafficData] = useState<any[]>([]);
   const [infoData, setInfoData] = useState<any>({});
-  const [newVersion, setNewVersion] = useState<any>(null);
   const [showGuide, setShowGuide] = useState<boolean>(false);
   const [exact, setExact] = useState<boolean>(true);
   const intl = useIntl();
@@ -81,11 +74,6 @@ const Dashboard: React.FC = () => {
 
   const getSetting = async () => {
     getSummary(false);
-    getStatisticOrder()
-      .then((res) => {
-        setOrdersData(res.data || []);
-      })
-      .catch(() => {});
     getStatisticTraffic()
       .then((res) => {
         setTrafficData(res.data || []);
@@ -99,11 +87,6 @@ const Dashboard: React.FC = () => {
     getDashboardInfo()
       .then((res) => {
         setInfoData(res.data || []);
-      })
-      .catch(() => {});
-    checkVersion()
-      .then((res) => {
-        setNewVersion(res.data || null);
       })
       .catch(() => {});
   };
@@ -137,20 +120,6 @@ const Dashboard: React.FC = () => {
   const handleCloseGuide = () => {
     setStore('close_guide', true);
     setShowGuide(false);
-  };
-
-  const ordersConfig = {
-    data: ordersData,
-    //padding: 'auto',
-    xField: 'date',
-    yField: 'value',
-    seriesField: 'label',
-    colorField: 'label',
-    xAxis: {
-      // type: 'timeCat',
-      tickCount: 5,
-    },
-    smooth: true,
   };
 
   const trafficConfig = {
@@ -279,20 +248,6 @@ const Dashboard: React.FC = () => {
                     <FormattedMessage id="dashboard.guide.next" />
                   </h2>
                   <ul className="guide-list">
-                    <li
-                      className="link"
-                      onClick={() => handleJump('/setting/pay')}
-                    >
-                      <MoneyCollectOutlined />{' '}
-                      <FormattedMessage id="dashboard.guide.set-payment" />
-                    </li>
-                    <li
-                      className="link"
-                      onClick={() => handleJump('/order/shipping')}
-                    >
-                      <SendOutlined />{' '}
-                      <FormattedMessage id="dashboard.guide.shipping" />
-                    </li>
                     <li
                       className="link"
                       onClick={() => handleJump('/archive/page')}
@@ -566,14 +521,6 @@ const Dashboard: React.FC = () => {
               <div className="statistic-card">
                 <Tabs size="large" tabBarStyle={{ marginBottom: 24 }}>
                   <TabPane
-                    tab={intl.formatMessage({ id: 'menu.statistic.orders' })}
-                    key="orders"
-                  >
-                    <div className="statistic-bar">
-                      <Line {...ordersConfig} />
-                    </div>
-                  </TabPane>
-                  <TabPane
                     tab={intl.formatMessage({ id: 'menu.statistic.traffic' })}
                     key="traffic"
                   >
@@ -675,24 +622,6 @@ const Dashboard: React.FC = () => {
           <Card
             style={{ marginTop: '24px' }}
             title={intl.formatMessage({ id: 'dashboard.soft-info' })}
-            extra={
-              newVersion &&
-              !newVersion.trial && (
-                <Tooltip
-                  title={intl.formatMessage({
-                    id: 'dashboard.soft-info.click-to-upgrade',
-                  })}
-                >
-                  <span
-                    onClick={() => handleJump('/tool/upgrade')}
-                    className="new-version-tips"
-                  >
-                    <FormattedMessage id="dashboard.soft-info.new-version" />
-                    <span className="version">{newVersion.version}</span>
-                  </span>
-                </Tooltip>
-              )
-            }
           >
             <p>
               <FormattedMessage id="dashboard.soft-info.version" />

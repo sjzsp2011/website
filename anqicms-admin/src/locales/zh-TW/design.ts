@@ -23,6 +23,7 @@ export default {
   'design.data.initial': '初始化',
   'design.data.manage': '管理',
   'design.list': '設計範本列表',
+  'design.market.official': '官方範本市場',
   'design.upload': '上傳新範本',
   'design.package.zip': '範本壓縮檔',
   'design.package.zip.select': '選擇 Zip 壓縮檔',

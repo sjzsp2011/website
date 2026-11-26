@@ -15,7 +15,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
-	"kandaoni.com/anqicms/config"
 	"kandaoni.com/anqicms/model"
 	"kandaoni.com/anqicms/pkg/ai/eino"
 	"kandaoni.com/anqicms/pkg/mcp/intent"
@@ -649,42 +648,13 @@ func (svc *AiChatService) StopAgentScheduler() {
 
 // checkDueAgents 检查并执行到期的 Agent
 func (svc *AiChatService) checkDueAgents(ctx context.Context) {
-	// 先检查是否配置了ai
-	oldCfg := eino.GlobalConfig()
-	if oldCfg == nil {
-		// 未配置，直接返回
-		// 需要检查默认配置
+	if eino.GlobalConfig() == nil {
 		defaultSite := CurrentSite(nil)
-		aiSetting := defaultSite.LoadAiSetting("")
-		if len(aiSetting.Configs) > 0 && !strings.HasPrefix(aiSetting.LastModel, "anqi") {
-			// 进行配置
-			var cfg *eino.Config
-			if aiSetting.LastModel != "" {
-				for _, v := range aiSetting.Configs {
-					if v.Model == aiSetting.LastModel {
-						cfg = v
-						break
-					}
-				}
-			}
-			if cfg == nil {
-				cfg = aiSetting.Configs[0]
-			}
-			if err := eino.SetGlobalConfig(cfg); err != nil {
-				slog.Error("Failed to initialize AI client", "error", err)
-				return
-			} else {
-				slog.Info("AI client initialized successfully")
-			}
-		} else if config.AnqiUser.AuthId > 0 {
-			if err := eino.SetOfficialConfig(aiSetting.LastModel); err != nil {
-				slog.Error("Failed to initialize AI client", "error", err)
-				return
-			} else {
-				slog.Info("AI client initialized successfully")
-			}
-		} else {
-			// 配置错误，直接返回
+		settings := defaultSite.LoadAiSetting("")
+		if eino.GlobalConfig() == nil && settings.DefaultConfig() != nil {
+			defaultSite.ApplyAiChatSettings(settings)
+		}
+		if eino.GlobalConfig() == nil {
 			return
 		}
 	}

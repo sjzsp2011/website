@@ -11,7 +11,7 @@ import (
 // 2026-10-27 全接口测试发现 6 个只读意图明文吐凭据：
 // storage_get 的 s3 access_key/secret、wechat_get 的 app_secret、
 // google_get 的 client_secret、siteops_website list 的 mysql.password、
-// contentops_import setting_get、site_anqi 的 JWT 密钥。
+// contentops_import setting_get 的密钥。
 func TestMaskSecrets(t *testing.T) {
 	in := map[string]any{
 		"storage_type": "r2",

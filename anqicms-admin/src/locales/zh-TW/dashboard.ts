@@ -28,8 +28,6 @@ export default {
   'dashboard.login-info.last-time': '上次登入',
   'dashboard.web-info': '網站資訊',
   'dashboard.soft-info': '軟體資訊',
-  'dashboard.soft-info.click-to-upgrade': '點擊前往系統升級',
-  'dashboard.soft-info.new-version': '發現新版本：',
   'dashboard.soft-info.version': '軟體版本：',
   'dashboard.soft-info.trial-version': '體驗版',
   'dashboard.soft-info.memory-usage': '佔用記憶體：',

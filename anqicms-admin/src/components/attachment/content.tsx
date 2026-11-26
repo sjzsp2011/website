@@ -15,7 +15,6 @@ import {
   message,
 } from 'antd';
 import React, { useEffect, useRef, useState } from 'react';
-import AiImageGenerate from '../aiimage';
 import AttachmentAddUrl from './addUrl';
 import './index.less';
 
@@ -34,7 +33,6 @@ const AttachmentContent: React.FC<AttachmentContentProps> = (props) => {
   const [categories, setCategories] = useState<any[]>([]);
   const [categoryId, setCategoryId] = useState<number>(0);
   const [keyword, setKeyword] = useState<string>('');
-  const [aiVisible, setAiVisible] = useState<boolean>(false);
   const [addUrlVisible, setAddUrlVisible] = useState<boolean>(false);
 
   useEffect(() => {
@@ -139,10 +137,6 @@ const AttachmentContent: React.FC<AttachmentContentProps> = (props) => {
     }
   };
 
-  const handleGenerateImage = async () => {
-    setAiVisible(true);
-  };
-
   const handleChangeCategory = (e: any) => {
     setCategoryId(e);
     if (props.multiple) {
@@ -185,11 +179,6 @@ const AttachmentContent: React.FC<AttachmentContentProps> = (props) => {
   const onChangeSelect = (e: any) => {
     setSelectedRowKeys(e);
     props.onSelect(e);
-  };
-
-  const handleSubmitAi = () => {
-    actionRef.current?.reloadAndRest?.();
-    setAiVisible(false);
   };
 
   const handleSubmitAddUrl = () => {
@@ -250,11 +239,6 @@ const AttachmentContent: React.FC<AttachmentContentProps> = (props) => {
           <Button onClick={() => handleAddUrl()}>
             {props.intl?.formatMessage({ id: 'content.attachment.add-url' }) ||
               '添加远程资源'}
-          </Button>
-          <Button type="default" onClick={handleGenerateImage}>
-            {props.intl?.formatMessage({
-              id: 'component.aiimage.generate',
-            }) || 'AI生成图片'}
           </Button>
           {selectedRowKeys.length > 0 && (
             <span>
@@ -347,14 +331,6 @@ const AttachmentContent: React.FC<AttachmentContentProps> = (props) => {
           }}
         />
       </Checkbox.Group>
-      {aiVisible && (
-        <AiImageGenerate
-          onCancel={() => setAiVisible(false)}
-          onSubmit={handleSubmitAi}
-          open={aiVisible}
-          intl={props.intl}
-        />
-      )}
       {addUrlVisible && (
         <AttachmentAddUrl
           onCancel={() => setAddUrlVisible(false)}

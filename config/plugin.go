@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 	"sync"
@@ -408,13 +409,34 @@ func (pm *PluginMultiLangConfig) SaveSite(site MultiLangSite) {
 	}
 }
 
+const TranslationAPIKeyMask = "********"
+
 type PluginTranslateConfig struct {
-	Engine          string `json:"engine"`            // 使用的翻译引擎，默认为官方接口，可选有：baidu,youdao,ai,deepl
+	Engine          string `json:"engine"`            // 翻译引擎：空值使用官方接口，或选择 baidu、youdao、ai、deepl、openai。
 	BaiduAppId      string `json:"baidu_app_id"`      // 百度翻译 APPID
 	BaiduAppSecret  string `json:"baidu_app_secret"`  // 百度翻译 AppSecret
 	YoudaoAppKey    string `json:"youdao_app_key"`    // 有道翻译 AppKey
 	YoudaoAppSecret string `json:"youdao_app_secret"` // 有道翻译 AppSecret
 	DeeplAuthKey    string `json:"deepl_auth_key"`    // Deepl Auth Key
+	OpenAIBaseURL   string `json:"openai_base_url"`   // OpenAI 兼容接口地址，例如 https://api.apiyi.com/v1。
+	OpenAIAPIKey    string `json:"openai_api_key"`    // 翻译接口 API Key。读接口返回 ******** 表示已配置，保存时省略或回传 ******** 保留原值。
+	OpenAIModel     string `json:"openai_model"`      // 翻译模型 ID，须为所选接口提供的文本模型。
+}
+
+// NormalizeOpenAITranslation normalizes the base URL and verifies the model credentials.
+func (c *PluginTranslateConfig) NormalizeOpenAITranslation() error {
+	baseURL, err := url.Parse(strings.TrimSpace(c.OpenAIBaseURL))
+	if err != nil || baseURL.Hostname() == "" || (baseURL.Scheme != "https" && baseURL.Scheme != "http") ||
+		baseURL.User != nil || baseURL.ForceQuery || baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return errors.New("enter an HTTP or HTTPS translation API base URL without credentials, query or fragment")
+	}
+	c.OpenAIBaseURL = strings.TrimSuffix(strings.TrimRight(baseURL.String(), "/"), "/chat/completions")
+	c.OpenAIAPIKey = strings.TrimSpace(c.OpenAIAPIKey)
+	c.OpenAIModel = strings.TrimSpace(c.OpenAIModel)
+	if c.OpenAIAPIKey == "" || c.OpenAIModel == "" || strings.ContainsAny(c.OpenAIAPIKey, "\r\n") {
+		return errors.New("enter a valid translation API key and model ID")
+	}
+	return nil
 }
 
 type DataSchemaType struct {

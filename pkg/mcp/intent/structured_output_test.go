@@ -164,7 +164,6 @@ func TestSwitchComposeIntentsReadAction(t *testing.T) {
 		{"traffic_statistics", "traffic", "GET /system/api/statistic/traffic"},
 		{"system_config", "site_info", "GET /system/api/siteinfo"},
 		{"system_config", "site_version", "GET /system/api/version/info"},
-		{"system_config", "site_anqi", "GET /system/api/anqi/info"},
 	}
 	for _, c := range cases {
 		f := &fakeCap{}

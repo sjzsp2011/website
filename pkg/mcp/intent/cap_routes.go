@@ -191,7 +191,6 @@ var capEndpoints = map[string]capEndpoint{
 	// ── 系统：站点信息 ──
 	"website_info": {Method: "GET", Path: "/siteinfo"},
 	"version":      {Method: "GET", Path: "/version/info"},
-	"anqi_info":    {Method: "GET", Path: "/anqi/info"},
 }
 
 // capEndpointOf 返回能力对应的端点；ok=false 表示必须回落到能力 handler。

@@ -1,4 +1,3 @@
-import { getAnqiInfo } from '@/services';
 import config from '@/services/config';
 import { getSessionStore, getStore } from '@/utils/store';
 import {
@@ -8,7 +7,7 @@ import {
   ProFormTextArea,
 } from '@ant-design/pro-components';
 import { FormattedMessage, useIntl } from '@umijs/max';
-import { Button, Checkbox, Modal, Space, Tag, message } from 'antd';
+import { Button, Checkbox, Modal, Space, message } from 'antd';
 import React, { useEffect, useRef, useState } from 'react';
 import './index.less';
 import { parseTdkJson } from './parseTdk';
@@ -22,7 +21,6 @@ export type AiGetTdkProps = {
 
 const AiGetTdk: React.FC<AiGetTdkProps> = (props) => {
   const formRef = useRef<ProFormInstance>();
-  const [anqiUser, setAnqiUser] = useState<any>({});
   const [plainText, setPlainText] = useState<string>('');
   const [tdk, setTdk] = useState<any>({});
   const [aiContent, setAiContent] = useState<string>('');
@@ -32,10 +30,6 @@ const AiGetTdk: React.FC<AiGetTdkProps> = (props) => {
   const intl = useIntl();
 
   useEffect(() => {
-    // 获取AIremain
-    getAnqiInfo().then((res) => {
-      setAnqiUser(res.data || {});
-    });
     setPlainText(props.content.replace(/<[^>]*>/g, ''));
   }, []);
 
@@ -210,36 +204,6 @@ const AiGetTdk: React.FC<AiGetTdkProps> = (props) => {
       }}
       footer={null}
     >
-      <div className="mb-normal">
-        <div className="extra-text">
-          <Space>
-            <span>
-              <FormattedMessage id="component.right-content.integral" />
-              {anqiUser.integral}
-            </span>
-            <span>
-              <FormattedMessage id="component.right-content.free-token" />
-              {anqiUser.free_token}
-            </span>
-            <span>
-              <FormattedMessage id="component.right-content.total-token" />
-              {anqiUser.total_token}
-            </span>
-            <span>
-              <FormattedMessage id="component.right-content.un-pay-token" />
-              {anqiUser.un_pay_token}
-            </span>
-            {anqiUser.is_owe_fee === 1 && (
-              <Tag color="red">
-                <FormattedMessage id="component.right-content.is-owe-fee" />
-              </Tag>
-            )}
-          </Space>
-          <div>
-            <FormattedMessage id="component.right-content.total-token.description" />
-          </div>
-        </div>
-      </div>
       <ProForm layout="horizontal" formRef={formRef} submitter={false}>
         {aiContent && ((aiFinished && !parseOk) || !aiFinished) && (
           <ProFormTextArea

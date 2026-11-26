@@ -16,7 +16,10 @@ import (
 // PluginGetTranslateConfig 获取翻译插件配置。
 func PluginGetTranslateConfig(ctx iris.Context) {
 	currentSite := provider.CurrentSite(ctx)
-	setting := currentSite.PluginTranslate
+	setting := currentSite.TranslationSettings()
+	if setting.OpenAIAPIKey != "" {
+		setting.OpenAIAPIKey = config.TranslationAPIKeyMask
+	}
 
 	ctx.JSON(iris.Map{
 		"code": config.StatusOK,
@@ -53,20 +56,7 @@ func PluginSaveTranslateConfig(ctx iris.Context) {
 		})
 		return
 	}
-	if currentSite.PluginTranslate != nil {
-		req = *currentSite.PluginTranslate
-	}
-	if err := library.MergeJSONPayload(payload, &req); err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  err.Error(),
-		})
-		return
-	}
-
-	w2 := provider.GetWebsite(currentSite.Id)
-	w2.PluginTranslate = &req
-	err = currentSite.SaveSettingValue(provider.TranslateSettingKey, w2.PluginTranslate)
+	err = provider.GetWebsite(currentSite.Id).SaveTranslationSettings(payload)
 	if err != nil {
 		ctx.JSON(iris.Map{
 			"code": config.StatusFailed,

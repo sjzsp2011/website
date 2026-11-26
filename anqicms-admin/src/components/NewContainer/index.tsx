@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 export type NewContainerProps = {
   title?: any;
   extra?: React.ReactNode;
+  showSiteTabs?: boolean;
   onTabChange?: (key: string, isSubsite: boolean) => void;
   children: React.ReactNode;
 };
@@ -63,7 +64,7 @@ const NewContainer: React.FC<NewContainerProps> = (props) => {
 
   return (
     <PageContainer
-      tabList={websites}
+      tabList={props.showSiteTabs === false ? undefined : websites}
       tabActiveKey={activeKey}
       onTabChange={handleChangeSite}
       title={props.title}

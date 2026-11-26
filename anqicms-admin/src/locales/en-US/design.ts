@@ -30,6 +30,7 @@ export default {
   'design.data.initial': 'Initialize',
   'design.data.manage': 'Manage',
   'design.list': 'Design template list',
+  'design.market.official': 'Official template market',
   'design.upload': 'Upload new template',
   'design.package.zip': 'Template ZIP package',
   'design.package.zip.select': 'Select ZIP package',

@@ -55,6 +55,7 @@ require (
 	golang.org/x/image v0.48.0
 	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.38.0
+	golang.org/x/sync v0.25.0
 	golang.org/x/text v0.44.0
 	google.golang.org/api v0.30.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -178,7 +179,6 @@ require (
 	go.opencensus.io v0.22.4 // indirect
 	golang.org/x/arch v0.11.0 // indirect
 	golang.org/x/exp v0.0.0-20240404231335-c0f41cb1a7a0 // indirect
-	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/appengine v1.6.6 // indirect

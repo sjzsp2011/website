@@ -101,7 +101,7 @@ func mcpToolRiskLevel(name string) string {
 	}
 	if strings.HasPrefix(n, "setting_") || strings.HasPrefix(n, "plugin_backup") ||
 		strings.HasPrefix(n, "plugin_migrate") || strings.HasPrefix(n, "user_") ||
-		strings.HasPrefix(n, "admin_") || n == "version" || n == "anqi_info" ||
+		strings.HasPrefix(n, "admin_") || n == "version" ||
 		n == "rewrite_form" {
 		return "system"
 	}

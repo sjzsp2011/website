@@ -14,8 +14,6 @@ export default {
   'dashboard.guide.design.tips':
     '选择或创建一个自定义主题，设置布局、颜色、和图片',
   'dashboard.guide.design.start': '自定义主题',
-  'dashboard.guide.set-payment': '设置您的支付方式',
-  'dashboard.guide.shipping': '设置您的物流配送',
   'dashboard.guide.category': '产品分类',
   'dashboard.guide.comma': '，',
   'dashboard.guide.next': '接下来',
@@ -39,8 +37,6 @@ export default {
   'dashboard.login-info.last-time': '上次登录',
   'dashboard.web-info': '网站信息',
   'dashboard.soft-info': '软件信息',
-  'dashboard.soft-info.click-to-upgrade': '点击前往系统升级',
-  'dashboard.soft-info.new-version': '发现新版：',
   'dashboard.soft-info.version': '软件版本：',
   'dashboard.soft-info.trial-version': '体验版',
   'dashboard.soft-info.memory-usage': '占用内存：',

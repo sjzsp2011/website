@@ -974,7 +974,7 @@ func SettingAiForm(ctx iris.Context) {
 	defaultSite := provider.CurrentSite(nil)
 	chatSettings := defaultSite.LoadAiSetting("")
 	needSave := false
-	if len(req.Chat) > 0 {
+	if req.Chat != nil {
 		chatSettings.Configs = req.Chat
 		needSave = true
 	}
@@ -994,6 +994,9 @@ func SettingAiForm(ctx iris.Context) {
 
 		// cache new setting
 		defaultSite.Cache.Set("ai_setting", chatSettings, 86400)
+		if req.Chat != nil {
+			defaultSite.ApplyAiChatSettings(chatSettings)
+		}
 	}
 
 	// MCP 配置变更后热重建所有站点的 mcp.Server（使 ExposedTools 白名单即时生效）

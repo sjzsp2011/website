@@ -1,5 +1,4 @@
 import NewContainer from '@/components/NewContainer';
-import { useVipModal } from '@/components/vipModal';
 import {
   pluginGetStorage,
   pluginSaveStorage,
@@ -17,7 +16,6 @@ import { Alert, Button, Card, Divider, Upload, message } from 'antd';
 import React, { useEffect, useState } from 'react';
 
 const PluginStorage: React.FC<any> = () => {
-  const { isVip, checkVip, VipModal } = useVipModal();
   const [pushSetting, setPushSetting] = useState<any>({});
   const [fetched, setFetched] = useState<boolean>(false);
   const [storageType, setStorageType] = useState<string>('local');
@@ -97,19 +95,6 @@ const PluginStorage: React.FC<any> = () => {
                 fieldProps={{
                   onChange: changeStorageType,
                 }}
-                disabled={isVip === false}
-                extra={
-                  !isVip ? (
-                    <div
-                      className="link"
-                      onClick={() => {
-                        checkVip(() => {});
-                      }}
-                    >
-                      <FormattedMessage id="plugin.storage.vip-tip" />
-                    </div>
-                  ) : null
-                }
                 options={[
                   {
                     value: 'local',
@@ -553,7 +538,6 @@ const PluginStorage: React.FC<any> = () => {
           )}
         </div>
       </Card>
-      <VipModal />
     </NewContainer>
   );
 };

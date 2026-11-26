@@ -1,4 +1,3 @@
-import { useVipModal } from '@/components/vipModal';
 import { getKeywordSetting, saveKeywordSetting } from '@/services';
 import {
   ModalForm,
@@ -17,7 +16,6 @@ export type KeywordSettingProps = {
 };
 
 const KeywordSetting: React.FC<KeywordSettingProps> = (props) => {
-  const { checkVip, VipModal } = useVipModal();
   const [visible, setVisible] = useState<boolean>(false);
   const [fetched, setFetched] = useState<boolean>(false);
   const [setting, setSetting] = useState<any>({});
@@ -43,7 +41,7 @@ const KeywordSetting: React.FC<KeywordSettingProps> = (props) => {
   };
 
   const handleShowVisible = () => {
-    checkVip(() => setVisible(true));
+    setVisible(true);
   };
 
   const handleSubmit = async (data: any) => {
@@ -106,7 +104,6 @@ const KeywordSetting: React.FC<KeywordSettingProps> = (props) => {
 
   return (
     <>
-      <VipModal />
       <div
         onClick={() => {
           handleShowVisible();

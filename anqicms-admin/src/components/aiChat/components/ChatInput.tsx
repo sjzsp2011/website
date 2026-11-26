@@ -42,10 +42,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const intl = useIntl();
   // 构建模型选项列表
   const modelOptions = [
-    { label: 'AnQi Flash', value: 'anqi-flash' },
-    { label: 'AnQi Pro', value: 'anqi-pro' },
     ...customProviders.map((p, index) => ({
-      label: p.name,
+      label: p.name || p.model,
       value: `custom:${index}`,
     })),
   ];
@@ -55,30 +53,10 @@ const ChatInput: React.FC<ChatInputProps> = ({
     modelOptions.find((o) => o.value === selectedModel)?.label || selectedModel;
 
   // Dropdown 菜单项
-  const modelMenuItems: MenuProps['items'] = [
-    {
-      key: '__group_官方__',
-      type: 'group',
-      label: intl.formatMessage({ id: 'ai.chat.official-providers' }),
-      children: [
-        { key: 'anqi-flash', label: 'AnQi Flash' },
-        { key: 'anqi-pro', label: 'AnQi Pro' },
-      ],
-    },
-    ...(customProviders.length > 0
-      ? [
-          {
-            key: '__group_自定义__',
-            type: 'group' as const,
-            label: intl.formatMessage({ id: 'ai.chat.custom-providers' }),
-            children: customProviders.map((p, index) => ({
-              key: `custom:${index}`,
-              label: p.name,
-            })),
-          },
-        ]
-      : []),
-  ];
+  const modelMenuItems: MenuProps['items'] = modelOptions.map(({ label, value }) => ({
+    key: value,
+    label,
+  }));
 
   return (
     <div className="ai-chat-input" onDrop={onDropFile} onDragOver={onDragOver}>
@@ -128,8 +106,9 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 type="text"
                 size="small"
                 className="ai-chat-model-select"
+                disabled={modelOptions.length === 0}
               >
-                {currentModelLabel} <DownOutlined />
+                {currentModelLabel || intl.formatMessage({ id: 'ai.settings.title' })} <DownOutlined />
               </Button>
             </Dropdown>
           </div>

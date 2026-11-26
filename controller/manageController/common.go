@@ -1,28 +1,18 @@
 package manageController
 
 import (
-	"archive/zip"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/kataras/iris/v12"
 	captcha "github.com/mojocn/base64Captcha"
-	"github.com/parnurzeal/gorequest"
 	"kandaoni.com/anqicms/config"
 	"kandaoni.com/anqicms/controller"
-	"kandaoni.com/anqicms/library"
 	"kandaoni.com/anqicms/model"
 	"kandaoni.com/anqicms/provider"
-	"kandaoni.com/anqicms/request"
-	"kandaoni.com/anqicms/response"
 )
 
 // AdminFileServ 后台系统文件服务，根据请求路径输出 system 目录下的静态文件（支持目录默认 index.html）；同时根据 Site-Id 请求头或 site_id 参数为二级目录站点切换站点上下文。
@@ -132,204 +122,6 @@ func GetStatisticsDashboard(ctx iris.Context) {
 		"code": config.StatusOK,
 		"msg":  "",
 		"data": result,
-	})
-}
-
-// CheckVersion 检查当前版本是否为最新版。
-func CheckVersion(ctx iris.Context) {
-	link := "https://www.anqicms.com/downloads/version.json?goos=" + runtime.GOOS + "&goarch=" + runtime.GOARCH + "&type=" + config.VersionType
-	var lastVersion response.LastVersion
-	_, body, errs := gorequest.New().SetDoNotClearSuperAgent(true).Timeout(10 * time.Second).Get(link).EndBytes()
-	if errs != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusOK,
-			"msg":  ctx.Tr("CheckThatTheVersionIsTheLatestVersion"),
-		})
-		return
-	}
-
-	err := json.Unmarshal(body, &lastVersion)
-	if err == nil {
-		result := library.VersionCompare(lastVersion.Version, config.Version)
-		if result == 1 {
-			// 测试
-			// 版本有更新
-			ctx.JSON(iris.Map{
-				"code": config.StatusOK,
-				"msg":  ctx.Tr("FoundANewVersion"),
-				"data": lastVersion,
-			})
-			return
-		} else if lastVersion.TrialVersion != "" && library.VersionCompare(lastVersion.TrialVersion, config.Version) == 1 {
-			lastVersion.Trial = true
-			lastVersion.Version = lastVersion.TrialVersion
-			lastVersion.Description = lastVersion.TrialDescription
-			ctx.JSON(iris.Map{
-				"code": config.StatusOK,
-				"msg":  ctx.Tr("FoundANewTrialVersion"),
-				"data": lastVersion,
-			})
-		}
-	}
-
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  ctx.Tr("CheckThatTheVersionIsTheLatestVersion"),
-	})
-}
-
-// VersionUpgrade 执行系统版本升级：下载指定版本的程序压缩包，解压覆盖程序文件（跳过模板等文件）并替换主程序可执行文件。
-//
-// 参数说明：
-//   - 请求体 "version": 目标版本号。
-//   - 请求体 "trial": 是否升级为试用版本。
-//   - 请求体 "trial_version": 试用版本号，trial 为 true 时使用。
-func VersionUpgrade(ctx iris.Context) {
-	if _, err := os.Stat(filepath.Join(config.ExecPath, "go.mod")); err == nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  ctx.Tr("SourceCheckoutUpgradeDisabled"),
-		})
-		return
-	}
-
-	currentSite := provider.CurrentSite(ctx)
-	var lastVersion request.VersionData
-	if err := ctx.ReadJSON(&lastVersion); err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  err.Error(),
-		})
-		return
-	}
-	var version = lastVersion.Version
-	if lastVersion.Trial {
-		version = lastVersion.TrialVersion
-	}
-	// 下载压缩包
-	link := fmt.Sprintf("https://www.anqicms.com/downloads/anqicms-%s-%s-v%s.zip", runtime.GOOS, runtime.GOARCH, version)
-	if config.VersionType != "" {
-		link = fmt.Sprintf("https://www.anqicms.com/downloads/anqicms-%s-%s-%s-v%s.zip", config.VersionType, runtime.GOOS, runtime.GOARCH, version)
-	}
-	// 最长等待10分钟
-	resp, body, errs := gorequest.New().SetDoNotClearSuperAgent(true).Timeout(20 * time.Minute).Get(link).EndBytes()
-	if errs != nil || resp.StatusCode != 200 {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  ctx.Tr("VersionUpdateFailed"),
-		})
-		return
-	}
-	// 将文件写入
-	tmpFile := config.ExecPath + filepath.Base(link)
-	err := os.WriteFile(tmpFile, body, os.ModePerm)
-	if err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  ctx.Tr("VersionUpdateFailed"),
-		})
-		return
-	}
-	// 解压
-	zipReader, err := zip.OpenReader(tmpFile)
-	if err != nil {
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  ctx.Tr("VersionUpdateFailed"),
-		})
-		return
-	}
-	defer func() {
-		zipReader.Close()
-
-		// 删除压缩包
-		os.Remove(tmpFile)
-	}()
-
-	// 删除 system
-	_ = os.RemoveAll(config.ExecPath + "system")
-
-	var errorFiles []string
-	path, _ := os.Executable()
-	exec := filepath.Base(path)
-
-	execPath := filepath.Join(config.ExecPath, exec)
-	tmpExecPath := execPath + ".new"
-
-	for _, f := range zipReader.File {
-		if f.FileInfo().IsDir() {
-			continue
-		}
-		// 模板文件不更新
-		if strings.Contains(f.Name, "static/") ||
-			strings.Contains(f.Name, "template/") ||
-			strings.Contains(f.Name, ".sh") ||
-			strings.Contains(f.Name, ".bat") ||
-			strings.Contains(f.Name, "favicon.ico") {
-			continue
-		}
-		reader, err := f.Open()
-		if err != nil {
-			continue
-		}
-		realName := filepath.Join(config.ExecPath, f.Name)
-		if f.Name == "anqicms" || f.Name == "anqicms.exe" {
-			// 先以临时文件存储
-			realName = tmpExecPath
-		}
-		_ = os.MkdirAll(filepath.Dir(realName), os.ModePerm)
-		newFile, err := os.Create(realName)
-		if err != nil {
-			reader.Close()
-			errorFiles = append(errorFiles, realName)
-			continue
-		}
-		_, err = io.Copy(newFile, reader)
-		if err != nil {
-			reader.Close()
-			newFile.Close()
-			errorFiles = append(errorFiles, realName)
-			continue
-		}
-
-		reader.Close()
-		_ = newFile.Close()
-		// 对于可执行文件，需要赋予可执行权限，可执行文件有：anqicms,cwebp
-		if f.Name == "anqicms" || f.Name == "anqicms.exe" || strings.HasPrefix(f.Name, "cwebp_") {
-			_ = os.Chmod(realName, os.ModePerm)
-		}
-	}
-	// 尝试更换主程序
-	oldPath := execPath + ".old"
-	_ = os.Remove(oldPath)
-	err = os.Rename(execPath, oldPath)
-	if err == nil {
-		err = os.Rename(tmpExecPath, execPath)
-		if err == nil {
-			_ = os.Chmod(execPath, os.ModePerm)
-			// 移动成功
-			_ = os.Remove(oldPath)
-		} else {
-			//移动失败
-			err = os.Rename(oldPath, execPath)
-		}
-	} else {
-		log.Println("fail to rename old executable.", err)
-	}
-	if len(errorFiles) > 1 {
-		log.Println("Upgrade error files: ", errorFiles)
-		ctx.JSON(iris.Map{
-			"code": config.StatusFailed,
-			"msg":  ctx.Tr("VersionUpdatePartiallyFailed", errorFiles),
-		})
-		return
-	}
-
-	currentSite.AddAdminLog(ctx, ctx.Tr("UpdateSystemVersion", config.Version, lastVersion.Version))
-	msg := ctx.Tr("TheVersionHasBeenUpgraded")
-	ctx.JSON(iris.Map{
-		"code": config.StatusOK,
-		"msg":  msg,
 	})
 }
 
