@@ -9,8 +9,7 @@ import {
   FileAddOutlined,
   LayoutOutlined,
   LinkOutlined,
-  ProductOutlined,
-  ShopOutlined,
+  GlobalOutlined,
   TagOutlined,
 } from '@ant-design/icons';
 import { Line } from '@ant-design/plots';
@@ -24,7 +23,6 @@ import {
   Space,
   Statistic,
   Tabs,
-  Tag,
   message,
 } from 'antd';
 import dayjs from 'dayjs';
@@ -159,19 +157,6 @@ const Dashboard: React.FC = () => {
               <h1>
                 <FormattedMessage id="dashboard.guide.name" />
               </h1>
-              <p>
-                <FormattedMessage id="dashboard.guide.description" />
-                <span>
-                  <a
-                    className="link"
-                    href="https://www.anqicms.com/help"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <FormattedMessage id="dashboard.guide.help" />
-                  </a>
-                </span>
-              </p>
               <span className="guild-close" onClick={handleCloseGuide}>
                 <FormattedMessage id="component.close" />
               </span>
@@ -180,7 +165,7 @@ const Dashboard: React.FC = () => {
               <Col flex={1}>
                 <div className="guide-start">
                   <h2>
-                    <ShopOutlined />{' '}
+                    <GlobalOutlined />{' '}
                     <FormattedMessage id="dashboard.guide.welcome" />
                   </h2>
                   <div className="main-start">
@@ -203,16 +188,20 @@ const Dashboard: React.FC = () => {
                 >
                   <div>
                     <h3>
-                      <ProductOutlined />{' '}
-                      <FormattedMessage id="dashboard.guide.product" />
+                      <FileAddOutlined />{' '}
+                      <FormattedMessage id="dashboard.guide.archive" />
                     </h3>
                     <div className="text-muted">
-                      <FormattedMessage id="dashboard.guide.product.tips" />
+                      <FormattedMessage id="dashboard.guide.archive.tips" />
                     </div>
                   </div>
                   <div className="show-button">
-                    <Button size="large" type="primary">
-                      <FormattedMessage id="dashboard.guide.product.start" />
+                    <Button
+                      size="large"
+                      type="primary"
+                      onClick={() => handleJump('/archive/detail')}
+                    >
+                      <FormattedMessage id="dashboard.guide.step.publish" />
                     </Button>
                   </div>
                 </Space>
@@ -234,7 +223,11 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <div className="show-button">
-                    <Button size="large" type="primary">
+                    <Button
+                      size="large"
+                      type="primary"
+                      onClick={() => handleJump('/design/index')}
+                    >
                       <FormattedMessage id="dashboard.guide.design.start" />
                     </Button>
                   </div>
@@ -383,7 +376,7 @@ const Dashboard: React.FC = () => {
                           10.{' '}
                           <span
                             className="link"
-                            onClick={() => handleJump('/product/detail')}
+                            onClick={() => handleJump('/archive/detail')}
                           >
                             <FormattedMessage id="dashboard.guide.step.publish" />
                           </span>
@@ -413,7 +406,7 @@ const Dashboard: React.FC = () => {
           <Card
             title={intl.formatMessage({ id: 'dashboard.quick' })}
             extra={
-              <Button onClick={() => handleJump('/product/detail')}>
+              <Button onClick={() => handleJump('/archive/detail')}>
                 <FormattedMessage id="dashboard.guide.step.publish" />
               </Button>
             }
@@ -424,7 +417,7 @@ const Dashboard: React.FC = () => {
                   flex={1}
                   key={index}
                   onClick={() => {
-                    handleJump('/product/index?module_id=' + item.id);
+                    handleJump('/archive/list?module_id=' + item.id);
                   }}
                 >
                   <Statistic
@@ -618,39 +611,6 @@ const Dashboard: React.FC = () => {
                 </div>
               </Col>
             </Row>
-          </Card>
-          <Card
-            style={{ marginTop: '24px' }}
-            title={intl.formatMessage({ id: 'dashboard.soft-info' })}
-          >
-            <p>
-              <FormattedMessage id="dashboard.soft-info.version" />
-              <Space>
-                {infoData.version}
-                {infoData.trial && (
-                  <Tag color="orange">
-                    <FormattedMessage id="dashboard.soft-info.trial-version" />
-                  </Tag>
-                )}
-              </Space>
-            </p>
-            <p>
-              <FormattedMessage id="dashboard.soft-info.memory-usage" />
-              {(infoData.memory_usage / 1024 / 1024).toFixed(1)} MB
-            </p>
-            <p>
-              <FormattedMessage id="dashboard.soft-info.official-web" />
-              <a
-                href="https://www.anqicms.com/"
-                target={'_blank'}
-                rel="noreferrer"
-              >
-                https://www.anqicms.com
-              </a>
-            </p>
-            <div>
-              <FormattedMessage id="dashboard.soft-info.description" />
-            </div>
           </Card>
         </Col>
       </Row>
